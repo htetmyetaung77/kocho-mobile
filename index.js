@@ -628,6 +628,7 @@ bot.command("start", async ctx => {
   }
 });
 
+bot.command("menu", async ctx => { saveUser(ctx); await ctx.reply("🏠 ပင်မစာမျက်နှာ", { reply_markup: mainMenu() }); });
 bot.command("help", async ctx => {
   saveUser(ctx);
   await ctx.reply(
@@ -1482,7 +1483,38 @@ if (PUBLIC_URL && /^https?:\/\//.test(PUBLIC_URL)) {
   console.log(`Self-ping enabled: ${pingUrl} (every 10 min)`);
 }
 
-bot.start({ onStart: info => console.log(`Bot started: @${info.username}`) });
+bot.start({
+  onStart: async info => {
+    console.log(`Bot started: @${info.username}`);
+    // ---- Register command menu (shown in Telegram's "/" menu) ----
+    try {
+      await bot.api.setMyCommands([
+        { command: "start", description: "🏠 ပင်မစာမျက်နှာ / Main menu" },
+        { command: "shop", description: "📱 ဖုန်းဆိုင်ကြည့်ရန် / Browse shop" },
+        { command: "search", description: "🔍 ဖုန်းရှာရန် / Search phones" },
+        { command: "orders", description: "📦 ကျွန်ုပ်၏ Order များ / My orders" },
+        { command: "payment", description: "💳 ငွေလွှဲနည်း / Payment info" },
+        { command: "contact", description: "📞 ဆက်သွယ်ရန် / Contact us" },
+        { command: "help", description: "🆘 အကူအညီ / Help" },
+      ]);
+      console.log("Command menu registered.");
+    } catch (e) { console.log("setMyCommands error:", e.message); }
+
+    // ---- Set Mini App menu button (opens the web shop) ----
+    if (PUBLIC_URL && /^https?:\/\//.test(PUBLIC_URL)) {
+      try {
+        await bot.api.setChatMenuButton({
+          menu_button: {
+            type: "web_app",
+            text: "🛍️ ဆိုင်ဖွင့်ရန်",
+            web_app: { url: PUBLIC_URL.replace(/\/$/, "") + "/miniapp" },
+          },
+        });
+        console.log("Mini App menu button set.");
+      } catch (e) { console.log("setChatMenuButton error:", e.message); }
+    }
+  },
+});
 
 // ---- Startup: pull DB snapshot from GitHub, then seed if still empty ----
 (async () => {

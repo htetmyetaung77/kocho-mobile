@@ -12,5 +12,8 @@
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "grammy": "^1.35.0"
+  },
+  "allowScripts": {
+    "better-sqlite3@11.10.0": true
   }
 }

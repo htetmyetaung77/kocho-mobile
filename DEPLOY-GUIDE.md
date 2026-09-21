@@ -4,9 +4,10 @@
 - Bot username: @kocho_mobile_service_bot
 - Admin ID: 8927464164
 - Products: 66 items / 9 categories
+- Live URL: https://kocho-mobile-bot.onrender.com
 
 ## Option 1 — Render (Recommended, Free)
-1. Push this folder to a GitHub repository.
+1. Push this folder to a GitHub repository (branch `main`).
 2. Go to https://render.com → New → Web Service → connect your repo.
 3. Settings:
    - Build Command: `npm install`
@@ -15,12 +16,18 @@
 4. Add Environment Variables:
    - `BOT_TOKEN` = your bot token
    - `ADMIN_ID` = 8927464164
+   - `ADMIN_PASSWORD` = kocho2024
    - `BOT_USERNAME` = kocho_mobile_service_bot
-   - `PUBLIC_URL` = https://your-app.onrender.com
+   - `PUBLIC_URL` = https://kocho-mobile-bot.onrender.com
+   - `CHANNEL_ID` = @kochomobile
+   - `REQUIRE_CHANNEL_JOIN` = false
+   - `DELIVERY_FEE` = 0
+   - `GITHUB_TOKEN` = your GitHub PAT (for DB persistence)
+   - `GITHUB_REPO` = htetmyetaung77/kocho-mobile
    - `PORT` = 3000
-5. Deploy. The bot will run 24/7.
+5. Deploy. The bot will run 24/7 and self-ping to avoid free-tier spin-down.
 
-> Note: Render free tier sleeps after inactivity. For always-on, use a paid plan or Railway.
+> Note: Render free tier sleeps after inactivity. The bot self-pings `/health` every 10 minutes.
 
 ## Option 2 — Railway
 1. Go to https://railway.app → New Project → Deploy from GitHub repo.
@@ -41,9 +48,9 @@ pm2 startup
 ```
 
 ## Mini App
-- Deployed static page: https://sites.super.myninja.ai/75628a10-6e0a-49f0-8c93-1b0b53d6e979/3da0a6c5/index.html
-- After deploying the bot, the Mini App is also served at: `https://YOUR-DOMAIN/miniapp`
-- Set this URL in BotFather → Bot Settings → Menu Button / Web App.
+- Served at: `https://kocho-mobile-bot.onrender.com/miniapp`
+- The bot sets this as its Menu Button automatically on startup.
+- You can also set it manually in BotFather → Bot Settings → Menu Button / Web App.
 
 ## Security
 - Never commit `.env` or the bot token to GitHub.
