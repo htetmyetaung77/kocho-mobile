@@ -21,7 +21,20 @@
   .btn-outline{background:transparent;color:var(--brand);border:2px solid var(--brand)}
   .row{display:flex;gap:10px}
   .row .btn{margin-top:0}
-  .tag{display:inline-block;background:#2a0000;color:var(--brand);border-radius:20px;padding:4px 12px;font-size:12px;font-weight:700;margin:2px 4px 2px 0}
+  .tag{display:inline-block;background:#2a0000;color:var(--brand);border-radius:20px;padding:4px 12px;font-size:12px;font-weight:700;margin:2px 4px 2px 0;cursor:pointer;border:1px solid transparent}
+  .tag.active{background:var(--brand);color:#fff}
+  .searchbar{display:flex;gap:8px;margin:12px 0}
+  .searchbar input{flex:1;background:#111;border:1px solid #333;border-radius:12px;padding:12px;color:var(--text);font-size:15px;outline:none}
+  .searchbar input:focus{border-color:var(--brand)}
+  .searchbar button{background:var(--brand);border:0;border-radius:12px;color:#fff;padding:0 18px;font-weight:700;cursor:pointer}
+  .prod{display:flex;justify-content:space-between;align-items:center;gap:10px;background:#141414;border:1px solid #262626;border-radius:12px;padding:12px;margin:8px 0}
+  .prod .info{flex:1;min-width:0}
+  .prod .name{font-weight:700;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .prod .desc{font-size:12px;color:var(--muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .prod .price{color:var(--brand);font-weight:800;font-size:14px;white-space:nowrap}
+  .prod .stock{font-size:11px;color:var(--muted)}
+  .empty{text-align:center;color:var(--muted);padding:24px;font-size:14px}
+  .loading{text-align:center;color:var(--muted);padding:20px}
   footer{text-align:center;font-size:12px;color:var(--muted);padding:20px}
 </style>
 <script src="https://sites.super.myninja.ai/_assets/ninja-daytona-script.js"></script>
@@ -35,13 +48,17 @@
 <div class="wrap">
   <div class="card">
     <h3>📱 ဖုန်းစျေးနှုန်းများ</h3>
-    <p>iPhone, Xiaomi, Redmi, Oppo, Vivo, Samsung, Huawei, Realme, Tecno, ROG အစရှိသော ဖုန်းများ၏ နောက်ဆုံးစျေးနှုန်းများကို Telegram Bot မှတစ်ဆင့် ကြည့်ရှုနိုင်ပါတယ်။</p>
-    <span class="tag">iPhone</span><span class="tag">Xiaomi</span><span class="tag">Oppo</span><span class="tag">Vivo</span><span class="tag">Samsung</span><span class="tag">ROG</span>
+    <div class="searchbar">
+      <input id="q" type="search" placeholder="🔍 ဖုန်း Model ရှာရန်… (iPhone 15, Redmi…)" autocomplete="off">
+      <button id="searchBtn">ရှာ</button>
+    </div>
+    <div id="cats"></div>
+    <div id="products"><div class="loading">ဖုန်းများ ရယူနေသည်…</div></div>
   </div>
 
   <div class="card">
     <h3>🔄 အရောင်းအဝယ် ဝန်ဆောင်မှုများ</h3>
-    <p>🔹 ရောင်းမလား / ဝယ်မလား / ပေါင်မလား / အနိမ့်အမြင့်ချိန်းမလား — အားလုံး ဆောင်ရွက်ပေးပါတယ်။<br>
+    <p>🔹 ရောင်းမလား / ဝယ်မလား / ပေါင်မလား / အမေးအမြင့်ချိန်းမလား — အားလုံး ဆောင်ရွက်ပေးပါတယ်။<br>
     💳 မဟာဘောဂ / CB Bank / AYA Bank Credit Card အရစ်ကျ<br>
     🔸 Second Market ပေါက်ဈေးအတိုင်း 10% လျော့ပြီး ပြန်ဝယ်ပေးပါတယ်။</p>
   </div>
@@ -58,5 +75,61 @@
   </div>
 </div>
 <footer>© 𝗞𝗼 𝗖𝗵𝗼 𝗠𝗼𝗯𝗶𝗹𝗲 — Phone / Laptop / Other Devices</footer>
+
+<script>
+const BOT = "kocho_mobile_service_bot";
+let allProducts = [];
+let activeCat = "";
+
+function money(n){ return (Number(n)||0).toLocaleString("en-US") + " MMK"; }
+
+function renderCats(){
+  const cats = [...new Set(allProducts.map(p=>p.category))];
+  const el = document.getElementById("cats");
+  let html = `<span class="tag ${activeCat===""?"active":""}" data-cat="">အားလုံး</span>`;
+  for(const c of cats) html += `<span class="tag ${activeCat===c?"active":""}" data-cat="${c}">${c}</span>`;
+  el.innerHTML = html;
+  el.querySelectorAll(".tag").forEach(t=>{
+    t.onclick = ()=>{ activeCat = t.dataset.cat; renderCats(); renderProducts(); };
+  });
+}
+
+function renderProducts(){
+  const q = document.getElementById("q").value.trim().toLowerCase();
+  let list = allProducts;
+  if(activeCat) list = list.filter(p=>p.category===activeCat);
+  if(q) list = list.filter(p=>(p.name+" "+(p.description||"")+" "+p.category).toLowerCase().includes(q));
+  const el = document.getElementById("products");
+  if(!list.length){ el.innerHTML = `<div class="empty">🔍 ရှာဖွေတွေ့ရှိမှု မရှိပါ။</div>`; return; }
+  el.innerHTML = list.map(p=>`
+    <div class="prod">
+      <div class="info">
+        <div class="name">${p.name}</div>
+        <div class="desc">${p.description||p.category}</div>
+        <div class="stock">📦 Stock: ${p.stock}</div>
+      </div>
+      <div style="text-align:right">
+        <div class="price">${money(p.price)}</div>
+        <a class="btn btn-primary" style="margin-top:6px;padding:8px 12px;font-size:13px" href="https://t.me/${BOT}?start=shop">မှာယူရန်</a>
+      </div>
+    </div>`).join("");
+}
+
+async function load(){
+  try{
+    const r = await fetch("/api/products");
+    const d = await r.json();
+    allProducts = d.products || [];
+    renderCats(); renderProducts();
+  }catch(e){
+    document.getElementById("products").innerHTML = `<div class="empty">⚠️ ဖုန်းစျေးနှုန်းများ ရယူ၍ မရပါ။</div>`;
+  }
+}
+
+document.getElementById("searchBtn").onclick = renderProducts;
+document.getElementById("q").addEventListener("input", renderProducts);
+document.getElementById("q").addEventListener("keydown", e=>{ if(e.key==="Enter") renderProducts(); });
+load();
+</script>
 </body>
 </html>

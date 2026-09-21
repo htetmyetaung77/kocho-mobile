@@ -20,6 +20,14 @@ services:
         sync: false
       - key: CHANNEL_ID
         sync: false
+      - key: REQUIRE_CHANNEL_JOIN
+        value: "false"
+      - key: DELIVERY_FEE
+        value: "0"
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GITHUB_REPO
+        sync: false
       - key: OPENAI_API_KEY
         sync: false
       - key: PORT

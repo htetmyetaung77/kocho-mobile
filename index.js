@@ -12,6 +12,10 @@ const BOT_USERNAME = process.env.BOT_USERNAME || "";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "kocho2024";
 const CHANNEL_ID = process.env.CHANNEL_ID || ""; // e.g. @kocho_channel or -1001234567890
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN || ""; // for DB persistence
+const GITHUB_REPO = process.env.GITHUB_REPO || "";   // e.g. htetmyetaung77/kocho-mobile
+const DELIVERY_FEE = Number(process.env.DELIVERY_FEE || 0); // optional delivery fee
+const REQUIRE_CHANNEL_JOIN = String(process.env.REQUIRE_CHANNEL_JOIN || "").toLowerCase() === "true";
 
 if (!TOKEN || TOKEN === "PASTE_NEW_BOT_TOKEN_HERE") {
   console.error("BOT_TOKEN is missing. Put your NEW token in .env / Render Variables.");
@@ -80,6 +84,123 @@ function setSetting(key, value) {
     .run(key, String(value));
 }
 function getChannelId() { return getSetting("channel_id", CHANNEL_ID); }
+
+// ---- Migrations: add new columns if missing ----
+function addColumnIfMissing(table, column, def) {
+  try {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all();
+    if (!cols.some(c => c.name === column)) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${def}`);
+      console.log(`Migration: added ${table}.${column}`);
+    }
+  } catch (e) { console.error(`Migration error ${table}.${column}:`, e.message); }
+}
+addColumnIfMissing("orders", "customer_name", "TEXT DEFAULT ''");
+addColumnIfMissing("orders", "customer_phone", "TEXT DEFAULT ''");
+addColumnIfMissing("orders", "customer_address", "TEXT DEFAULT ''");
+addColumnIfMissing("orders", "quantity", "INTEGER DEFAULT 1");
+addColumnIfMissing("orders", "delivery_fee", "INTEGER DEFAULT 0");
+addColumnIfMissing("orders", "payment_screenshot", "TEXT DEFAULT ''");
+addColumnIfMissing("orders", "note", "TEXT DEFAULT ''");
+addColumnIfMissing("requests", "reply", "TEXT DEFAULT ''");
+addColumnIfMissing("requests", "replied_at", "TEXT DEFAULT ''");
+
+// ---------------------------------------------------------------------------
+// DB PERSISTENCE (GitHub-backed JSON snapshot)
+// Render free tier has no persistent disk, so we snapshot the DB to GitHub.
+// ---------------------------------------------------------------------------
+const DB_TABLES = ["users", "products", "orders", "requests", "stock_log", "settings"];
+const SNAPSHOT_PATH = "data/db-snapshot.json";
+
+function exportDb() {
+  const out = {};
+  for (const t of DB_TABLES) {
+    try { out[t] = db.prepare(`SELECT * FROM ${t}`).all(); } catch (e) { out[t] = []; }
+  }
+  out._savedAt = new Date().toISOString();
+  return out;
+}
+
+function importDb(data) {
+  if (!data || typeof data !== "object") return false;
+  let restored = 0;
+  const tx = db.transaction(() => {
+    for (const t of DB_TABLES) {
+      const rows = data[t];
+      if (!Array.isArray(rows) || !rows.length) continue;
+      // Only restore if the table is currently empty (avoid overwriting live data)
+      const count = db.prepare(`SELECT COUNT(*) c FROM ${t}`).get().c;
+      if (count > 0) continue;
+      for (const row of rows) {
+        const keys = Object.keys(row);
+        if (!keys.length) continue;
+        const cols = keys.map(k => `"${k}"`).join(",");
+        const ph = keys.map(() => "?").join(",");
+        try {
+          db.prepare(`INSERT OR IGNORE INTO ${t} (${cols}) VALUES (${ph})`).run(...keys.map(k => row[k]));
+          restored++;
+        } catch (e) {}
+      }
+    }
+  });
+  try { tx(); } catch (e) { console.error("importDb error:", e.message); }
+  return restored > 0;
+}
+
+async function pullFromGitHub() {
+  if (!GITHUB_TOKEN || !GITHUB_REPO) return false;
+  try {
+    const url = `https://api.github.com/repos/${GITHUB_REPO}/contents/${SNAPSHOT_PATH}`;
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${GITHUB_TOKEN}`, "User-Agent": "kocho-bot", Accept: "application/vnd.github+json" },
+    });
+    if (!res.ok) { console.log(`[db-pull] no snapshot (${res.status})`); return false; }
+    const meta = await res.json();
+    const content = Buffer.from(meta.content, "base64").toString("utf8");
+    const data = JSON.parse(content);
+    const ok = importDb(data);
+    console.log(`[db-pull] restored=${ok} savedAt=${data._savedAt || "?"}`);
+    return ok;
+  } catch (e) { console.log(`[db-pull] failed: ${e.message}`); return false; }
+}
+
+let _pushTimer = null;
+let _lastPushHash = "";
+async function pushToGitHub() {
+  if (!GITHUB_TOKEN || !GITHUB_REPO) return;
+  try {
+    const data = exportDb();
+    const json = JSON.stringify(data, null, 2);
+    const hash = require("crypto").createHash("md5").update(json).digest("hex");
+    if (hash === _lastPushHash) return; // no change
+    const url = `https://api.github.com/repos/${GITHUB_REPO}/contents/${SNAPSHOT_PATH}`;
+    // Get current sha if file exists
+    let sha = null;
+    const getRes = await fetch(url, {
+      headers: { Authorization: `Bearer ${GITHUB_TOKEN}`, "User-Agent": "kocho-bot", Accept: "application/vnd.github+json" },
+    });
+    if (getRes.ok) { const m = await getRes.json(); sha = m.sha; }
+    const body = {
+      message: `db snapshot ${new Date().toISOString()}`,
+      content: Buffer.from(json).toString("base64"),
+      ...(sha ? { sha } : {}),
+    };
+    const putRes = await fetch(url, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${GITHUB_TOKEN}`, "User-Agent": "kocho-bot", Accept: "application/vnd.github+json", "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (putRes.ok) { _lastPushHash = hash; console.log(`[db-push] saved (${json.length} bytes)`); }
+    else { console.log(`[db-push] failed ${putRes.status}: ${(await putRes.text()).slice(0, 200)}`); }
+  } catch (e) { console.log(`[db-push] error: ${e.message}`); }
+}
+
+// Debounced save (call after any data change)
+function saveDb() {
+  if (!GITHUB_TOKEN || !GITHUB_REPO) return;
+  if (_pushTimer) clearTimeout(_pushTimer);
+  _pushTimer = setTimeout(() => { pushToGitHub(); }, 5000);
+}
 
 // ---------------------------------------------------------------------------
 // PRODUCT CATALOG  (Ko Cho Mobile)
@@ -161,16 +282,18 @@ const CATALOG = [
   ["ROG", "ROG 8 Pro 16/512Gb", "Black • Charger Only", 2450000],
 ];
 
-const seed = db.prepare("SELECT COUNT(*) AS c FROM products").get();
-if (seed.c === 0) {
-  const add = db.prepare(
-    "INSERT INTO products (category, name, description, price, stock) VALUES (?, ?, ?, ?, ?)"
-  );
-  const tx = db.transaction((rows) => {
-    for (const [category, name, description, price] of rows) add.run(category, name, description, price, 1);
-  });
-  tx(CATALOG);
-  console.log(`Seeded ${CATALOG.length} products.`);
+function seedIfEmpty() {
+  const seed = db.prepare("SELECT COUNT(*) AS c FROM products").get();
+  if (seed.c === 0) {
+    const add = db.prepare(
+      "INSERT INTO products (category, name, description, price, stock) VALUES (?, ?, ?, ?, ?)"
+    );
+    const tx = db.transaction((rows) => {
+      for (const [category, name, description, price] of rows) add.run(category, name, description, price, 1);
+    });
+    tx(CATALOG);
+    console.log(`Seeded ${CATALOG.length} products.`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -265,6 +388,54 @@ function saveUser(ctx) {
 
 function isAdmin(ctx) { return ADMIN_ID && String(ctx.from.id) === ADMIN_ID; }
 
+// ---- Channel membership check (for join requirement) ----
+async function isChannelMember(userId) {
+  const ch = getChannelId();
+  if (!ch || !REQUIRE_CHANNEL_JOIN) return true;
+  try {
+    const m = await bot.api.getChatMember(ch, userId);
+    return ["creator", "administrator", "member", "restricted"].includes(m.status);
+  } catch (e) {
+    // If we can't check (bot not admin), don't block the user
+    return true;
+  }
+}
+
+function joinKeyboard() {
+  const ch = getChannelId();
+  const kb = new InlineKeyboard();
+  if (ch) {
+    const url = ch.startsWith("@") ? `https://t.me/${ch.slice(1)}` : `https://t.me/c/${String(ch).replace("-100", "")}`;
+    kb.url("📢 Channel သို့ ဝင်ရောက်ရန်", url).row();
+  }
+  kb.text("✅ ဝင်ပြီးပါပြီ — စစ်ဆေးရန်", "checkjoin");
+  return kb;
+}
+
+// ---- Auto-post a product to the channel (new product / price change) ----
+async function postProductToChannel(product, kind = "new") {
+  const ch = getChannelId();
+  if (!ch) return false;
+  const title = kind === "price" ? "💰 စျေးနှုန်း အသစ်" : "🆕 ဖုန်းအသစ် ရောက်ရှိပါပြီ";
+  const msg =
+    `${title}\n\n` +
+    `📱 ${product.name}\n` +
+    `🏷️ ${product.category}\n` +
+    (product.description ? `📝 ${product.description}\n` : "") +
+    `💰 ${money(product.price)}\n` +
+    `📦 Stock: ${product.stock}\n\n` +
+    `👉 အသေးစိတ်ကြည့်ရန် / မှာယူရန် Bot ကို နှိပ်ပါ`;
+  const kb = new InlineKeyboard()
+    .url("🛒 ကြည့်ရှုရန် / မှာယူရန်", `https://t.me/${BOT_USERNAME || "kocho_mobile_service_bot"}?start=shop`);
+  try {
+    await bot.api.sendMessage(ch, msg, { reply_markup: kb });
+    return true;
+  } catch (e) {
+    console.log("channel auto-post failed:", e.message);
+    return false;
+  }
+}
+
 function money(n) {
   if (!n || Number(n) === 0) return "စျေးနှုန်း မေးမြန်းပါ";
   return Number(n).toLocaleString("en-US") + " MMK";
@@ -325,9 +496,60 @@ async function showCategory(ctx, category) {
 async function showOrders(ctx) {
   const rows = db.prepare("SELECT * FROM orders WHERE user_id=? ORDER BY id DESC LIMIT 20").all(ctx.from.id);
   if (!rows.length) return ctx.reply("📦 Order မရှိသေးပါ။", { reply_markup: mainMenu() });
-  const text = rows.map(o => `#${o.id} • ${o.product_name}\n💰 ${money(o.price)}\n📌 ${o.status}`).join("\n\n");
-  await ctx.reply(`📦 My Orders\n\n${text}`, { reply_markup: mainMenu() });
+  const kb = new InlineKeyboard();
+  for (const o of rows) {
+    const icon = o.status === "delivered" ? "🚚" : o.status === "confirmed" ? "✅" : o.status === "cancelled" ? "❌" : "⏳";
+    kb.text(`${icon} #${o.id} ${o.product_name.slice(0, 18)} — ${money(o.price)}`, `myord:${o.id}`).row();
+  }
+  kb.text("🏠 Main Menu", "home");
+  await ctx.reply(`📦 **My Orders**\n\nOrder တစ်ခုကို နှိပ်ပြီး အသေးစိတ်ကြည့်ပါ 👇`, { parse_mode: "Markdown", reply_markup: kb });
 }
+
+// ---- Customer: view own order detail + cancel ----
+bot.callbackQuery(/^myord:(\d+)$/, async ctx => {
+  await ctx.answerCallbackQuery();
+  const o = db.prepare("SELECT * FROM orders WHERE id=? AND user_id=?").get(Number(ctx.match[1]), ctx.from.id);
+  if (!o) return ctx.reply("Order မတွေ့ပါ။");
+  const labels = { pending: "⏳ Pending", confirmed: "✅ Confirmed", delivered: "🚚 Delivered", cancelled: "❌ Cancelled" };
+  const kb = new InlineKeyboard();
+  if (o.status === "pending" || o.status === "confirmed") {
+    kb.text("❌ Order ဖျက်သိမ်းရန်", `mycancel:${o.id}`).row();
+  }
+  kb.text("⬅️ My Orders", "myorders").row().text("🏠 Main Menu", "home");
+  await ctx.reply(
+    `🧾 **Order #${o.id}**\n\n📱 ${o.product_name}\n🔢 အရေအတွက်: ${o.quantity || 1}\n💰 စုစုပေါင်း: ${money(o.price)}\n📌 အခြေအနေ: ${labels[o.status] || o.status}\n👤 ${o.customer_name || "-"}\n📞 ${o.customer_phone || "-"}\n📍 ${o.customer_address || "-"}`,
+    { parse_mode: "Markdown", reply_markup: kb }
+  );
+});
+
+bot.callbackQuery("myorders", async ctx => {
+  await ctx.answerCallbackQuery();
+  try { await ctx.deleteMessage(); } catch (e) {}
+  await showOrders(ctx);
+});
+
+bot.callbackQuery(/^mycancel:(\d+)$/, async ctx => {
+  await ctx.answerCallbackQuery();
+  const o = db.prepare("SELECT * FROM orders WHERE id=? AND user_id=?").get(Number(ctx.match[1]), ctx.from.id);
+  if (!o) return ctx.reply("Order မတွေ့ပါ။");
+  if (o.status === "delivered" || o.status === "cancelled") {
+    return ctx.reply("ဤ Order ကို ဖျက်သိမ်း၍ မရတော့ပါ။", { reply_markup: mainMenu() });
+  }
+  db.prepare("UPDATE orders SET status='cancelled' WHERE id=?").run(o.id);
+  // Restore stock
+  if (o.product_id) {
+    db.prepare("UPDATE products SET stock=stock+? WHERE id=?").run(o.quantity || 1, o.product_id);
+    db.prepare("INSERT INTO stock_log (product_id, product_name, change, note) VALUES (?,?,?,?)")
+      .run(o.product_id, o.product_name, o.quantity || 1, `order #${o.id} cancelled by user`);
+  }
+  saveDb();
+  await ctx.reply(`✅ Order #${o.id} ကို ဖျက်သိမ်းပြီးပါပြီ။\n\n📱 ${o.product_name}\nStock ပြန်လည်ဖြည့်တင်းပြီးပါပြီ။`, { reply_markup: mainMenu() });
+  if (ADMIN_ID) {
+    try {
+      await bot.api.sendMessage(ADMIN_ID, `⚠️ Order #${o.id} ကို Customer မှ ဖျက်သိမ်းလိုက်ပါသည်။\n📱 ${o.product_name}\n👤 ${o.customer_name || "-"}\n📞 ${o.customer_phone || "-"}`);
+    } catch (e) {}
+  }
+});
 
 // ---------------------------------------------------------------------------
 // AI CHAT
@@ -370,6 +592,9 @@ async function aiReply(userText) {
 const pendingSearch = new Set();
 const pendingRequest = new Map(); // userId -> type
 const adminState = new Map();     // userId -> { action, data }
+const pendingOrder = new Map();   // userId -> { productId, step, data }
+const pendingReply = new Map();   // adminId -> requestId (reply to request)
+const pendingScreenshot = new Map(); // userId -> orderId (payment screenshot)
 
 // ---------------------------------------------------------------------------
 // COMMANDS
@@ -377,6 +602,15 @@ const adminState = new Map();     // userId -> { action, data }
 bot.command("start", async ctx => {
   saveUser(ctx);
   const payload = (ctx.match || "").trim();
+  // Channel join requirement
+  if (!isAdmin(ctx) && !(await isChannelMember(ctx.from.id))) {
+    return ctx.reply(
+      "🔒 **Channel Join လိုအပ်ပါသည်**\n\n" +
+      "ကျွန်ုပ်တို့ Bot ကို အသုံးပြုရန် အောက်ပါ Channel ကို အရင် Join ပေးပါ 👇\n\n" +
+      "Join ပြီးပါက \"✅ ဝင်ပြီးပါပြီ\" ကို နှိပ်ပါ။",
+      { parse_mode: "Markdown", reply_markup: joinKeyboard() }
+    );
+  }
   const caption =
     `👋 မင်္ဂလာပါ ${ctx.from.first_name || ""}!\n\n` +
     `🏪 𝗞𝗼 𝗖𝗵𝗼 𝗠𝗼𝗯𝗶𝗹𝗲 (𝗚𝗼𝗼𝗱 𝗘𝘃𝗲𝗻𝗶𝗻𝗴 𝗠𝗼𝗯𝗶𝗹𝗲 𝗦𝗵𝗼𝗽) မှ ကြိုဆိုပါတယ်။\n\n` +
@@ -450,6 +684,22 @@ bot.callbackQuery("home", async ctx => {
   catch (e) { await ctx.reply("🏠 Main Menu", { reply_markup: mainMenu() }); }
 });
 
+// ---- Channel join check ----
+bot.callbackQuery("checkjoin", async ctx => {
+  if (await isChannelMember(ctx.from.id)) {
+    await ctx.answerCallbackQuery({ text: "✅ ဝင်ပြီးပါပြီ!" });
+    try { await ctx.deleteMessage(); } catch (e) {}
+    await ctx.reply(
+      `👋 မင်္ဂလာပါ ${ctx.from.first_name || ""}!\n\n` +
+      `🏪 Ko Cho Mobile (Good Evening Mobile Shop) မှ ကြိုဆိုပါတယ်။\n\n` +
+      `📱 ဖုန်းစျေးနှုန်းများ၊ အရောင်းအဝယ် ဝန်ဆောင်မှုများကို အောက်က Menu ကနေ ရွေးချယ်ကြည့်ရှုနိုင်ပါတယ်။`,
+      { reply_markup: mainMenu() }
+    );
+  } else {
+    await ctx.answerCallbackQuery({ text: "❌ Channel ကို Join မလုပ်ရသေးပါ။", show_alert: true });
+  }
+});
+
 bot.callbackQuery("shop", async ctx => { await ctx.answerCallbackQuery(); await showShop(ctx, true); });
 
 bot.callbackQuery(/^cat:(.+)$/, async ctx => {
@@ -479,23 +729,30 @@ bot.callbackQuery(/^order:(\d+)$/, async ctx => {
   const id = Number(ctx.match[1]);
   const p = db.prepare("SELECT * FROM products WHERE id=? AND active=1").get(id);
   if (!p) return ctx.reply("Product မတွေ့ပါ။");
-  const info = db.prepare("INSERT INTO orders (user_id, product_id, product_name, price) VALUES (?,?,?,?)")
-    .run(ctx.from.id, p.id, p.name, p.price);
-  const kb = new InlineKeyboard().text("💳 ငွေလွှဲနည်း", "payment").row().text("🏠 Main Menu", "home");
-  await ctx.reply(
-    `✅ Order တင်ပြီးပါပြီ!\n\n🧾 Order ID: #${info.lastInsertRowid}\n📱 ${p.name}\n💰 ${money(p.price)}\n\n` +
-    `ငွေလွှဲရန် "💳 ငွေလွှဲနည်း" ကိုနှိပ်ပါ။ Admin မှ ဆက်လက်ဆောင်ရွက်ပေးပါမည်။`,
-    { reply_markup: kb }
-  );
-  if (ADMIN_ID) {
-    try {
-      await bot.api.sendMessage(ADMIN_ID,
-        `🔔 New Order #${info.lastInsertRowid}\n👤 ${ctx.from.first_name} (@${ctx.from.username || "no_username"})\n📱 ${p.name}\n💰 ${money(p.price)}`);
-    } catch (e) {}
+  if (p.stock <= 0) {
+    return ctx.reply(`❌ ဒီပစ္စည်း ကုန်နေပါပြီ။\n\n📱 ${p.name}\n\nအခြား Model တွေ ကြည့်ရန် /shop ကို နှိပ်ပါ။`, { reply_markup: mainMenu() });
   }
+  // Start order flow: ask customer name
+  pendingOrder.set(ctx.from.id, { productId: p.id, step: "name", data: {} });
+  await ctx.reply(
+    `🛒 Order တင်ခြင်း\n\n📱 ${p.name}\n💰 ${money(p.price)}\n\n` +
+    `1️⃣ သင့်နာမည် ရိုက်ထည့်ပါ:\n\n(ပယ်ဖျက်ရန် /cancel ရိုက်ပါ)`,
+    { reply_markup: new InlineKeyboard().text("❌ ပယ်ဖျက်", "home") }
+  );
 });
 
 bot.callbackQuery("payment", async ctx => { await ctx.answerCallbackQuery(); await ctx.reply(PAYMENT_INFO, { reply_markup: mainMenu() }); });
+
+// ---- Payment screenshot upload ----
+bot.callbackQuery(/^pay:(\d+)$/, async ctx => {
+  await ctx.answerCallbackQuery();
+  const orderId = Number(ctx.match[1]);
+  pendingScreenshot.set(ctx.from.id, orderId);
+  await ctx.reply(
+    `📸 Order #${orderId} အတွက် ငွေလွှဲ Screenshot ကို ဒီ chat မှာ ပို့ပါ။\n\n(ပယ်ဖျက်ရန် /cancel ရိုက်ပါ)`,
+    { reply_markup: new InlineKeyboard().text("❌ ပယ်ဖျက်", "home") }
+  );
+});
 
 bot.callbackQuery("sell", async ctx => {
   await ctx.answerCallbackQuery();
@@ -630,6 +887,7 @@ bot.callbackQuery(/^edelok:(\d+)$/, async ctx => {
   const p = db.prepare("SELECT * FROM products WHERE id=?").get(id);
   if (!p) return;
   db.prepare("DELETE FROM products WHERE id=?").run(id);
+  saveDb();
   await ctx.reply(`✅ "${p.name}" ကို ဖျက်ပြီးပါပြီ။`, { reply_markup: adminMenu() });
 });
 
@@ -673,21 +931,112 @@ bot.callbackQuery(/^stk:(\d+)$/, async ctx => {
 bot.callbackQuery("admin_orders", async ctx => {
   await ctx.answerCallbackQuery();
   if (!isAdmin(ctx)) return;
-  const rows = db.prepare("SELECT * FROM orders ORDER BY id DESC LIMIT 20").all();
-  const text = rows.length
-    ? rows.map(o => `#${o.id} • User ${o.user_id}\n${o.product_name} • ${money(o.price)} • ${o.status}`).join("\n\n")
-    : "No orders";
-  await ctx.reply(`📈 Orders\n\n${text}`, { reply_markup: adminMenu() });
+  const rows = db.prepare("SELECT * FROM orders ORDER BY id DESC LIMIT 10").all();
+  if (!rows.length) return ctx.reply("📈 Orders\n\nNo orders", { reply_markup: adminMenu() });
+  const kb = new InlineKeyboard();
+  for (const o of rows) {
+    kb.text(`#${o.id} ${o.product_name.slice(0, 20)} — ${o.status}`, `ord:${o.id}`).row();
+  }
+  kb.text("🏠 Admin Menu", "admin_home");
+  await ctx.reply(`📈 Orders (နောက်ဆုံး 10)\n\nOrder တစ်ခုကို နှိပ်ပြီး status ပြောင်းနိုင်ပါတယ်။`, { reply_markup: kb });
+});
+
+// ---- Admin: view single order + change status ----
+bot.callbackQuery(/^ord:(\d+)$/, async ctx => {
+  await ctx.answerCallbackQuery();
+  if (!isAdmin(ctx)) return;
+  const o = db.prepare("SELECT * FROM orders WHERE id=?").get(Number(ctx.match[1]));
+  if (!o) return ctx.reply("Order မတွေ့ပါ။", { reply_markup: adminMenu() });
+  const u = db.prepare("SELECT * FROM users WHERE id=?").get(o.user_id);
+  const text =
+    `🧾 Order #${o.id}\n\n` +
+    `📱 ${o.product_name}\n` +
+    `🔢 အရေအတွက်: ${o.quantity || 1}\n` +
+    `💰 ${money(o.price)}\n` +
+    `👤 ${o.customer_name || (u ? u.first_name : "?")}\n` +
+    `📞 ${o.customer_phone || "-"}\n` +
+    `📍 ${o.customer_address || "-"}\n` +
+    `📌 Status: ${o.status}\n` +
+    `🕐 ${o.created_at}\n` +
+    (o.payment_screenshot ? `📸 Screenshot: ရရှိပြီး` : `📸 Screenshot: မရသေး`);
+  const kb = new InlineKeyboard()
+    .text("✅ Confirm", `ost:${o.id}:confirmed`).text("🚚 Delivered", `ost:${o.id}:delivered`).row()
+    .text("❌ Cancel", `ost:${o.id}:cancelled`).text("⏳ Pending", `ost:${o.id}:pending`).row();
+  if (o.payment_screenshot) kb.text("📸 Screenshot ကြည့်", `oshow:${o.id}`).row();
+  kb.text("⬅️ Orders", "admin_orders");
+  await ctx.reply(text, { reply_markup: kb });
+});
+
+// ---- Admin: change order status ----
+bot.callbackQuery(/^ost:(\d+):(\w+)$/, async ctx => {
+  await ctx.answerCallbackQuery();
+  if (!isAdmin(ctx)) return;
+  const id = Number(ctx.match[1]);
+  const status = ctx.match[2];
+  const o = db.prepare("SELECT * FROM orders WHERE id=?").get(id);
+  if (!o) return ctx.reply("Order မတွေ့ပါ။");
+  db.prepare("UPDATE orders SET status=? WHERE id=?").run(status, id);
+  saveDb();
+  const labels = { pending: "⏳ Pending", confirmed: "✅ Confirmed", delivered: "🚚 Delivered", cancelled: "❌ Cancelled" };
+  try {
+    await bot.api.sendMessage(o.user_id,
+      `📢 သင့် Order #${id} အခြေအနေ ပြောင်းလဲပါပြီ:\n\n${labels[status] || status}\n\n📱 ${o.product_name}\n💰 ${money(o.price)}`);
+  } catch (e) {}
+  await ctx.reply(`✅ Order #${id} → ${labels[status] || status}\n\nCustomer ကို အသိပေးပြီးပါပြီ။`, { reply_markup: adminMenu() });
+});
+
+// ---- Admin: view payment screenshot ----
+bot.callbackQuery(/^oshow:(\d+)$/, async ctx => {
+  await ctx.answerCallbackQuery();
+  if (!isAdmin(ctx)) return;
+  const o = db.prepare("SELECT * FROM orders WHERE id=?").get(Number(ctx.match[1]));
+  if (!o || !o.payment_screenshot) return ctx.reply("Screenshot မရှိပါ။");
+  try {
+    await bot.api.sendPhoto(ctx.from.id, o.payment_screenshot, { caption: `📸 Order #${o.id} payment screenshot` });
+  } catch (e) { await ctx.reply("Screenshot ပို့လို့မရပါ။"); }
 });
 
 bot.callbackQuery("admin_requests", async ctx => {
   await ctx.answerCallbackQuery();
   if (!isAdmin(ctx)) return;
-  const rows = db.prepare("SELECT * FROM requests ORDER BY id DESC LIMIT 20").all();
-  const text = rows.length
-    ? rows.map(r => `#${r.id} • ${r.type} • User ${r.user_id}\n${r.detail}`).join("\n\n")
-    : "No requests";
-  await ctx.reply(`📥 Requests\n\n${text}`, { reply_markup: adminMenu() });
+  const rows = db.prepare("SELECT * FROM requests ORDER BY id DESC LIMIT 10").all();
+  if (!rows.length) return ctx.reply("📥 Requests\n\nNo requests", { reply_markup: adminMenu() });
+  const kb = new InlineKeyboard();
+  for (const r of rows) {
+    kb.text(`#${r.id} ${r.type} — ${r.status}`, `req:${r.id}`).row();
+  }
+  kb.text("🏠 Admin Menu", "admin_home");
+  await ctx.reply(`📥 Requests (နောက်ဆုံး 10)\n\nRequest တစ်ခုကို နှိပ်ပြီး ပြန်ဖြေနိုင်ပါတယ်။`, { reply_markup: kb });
+});
+
+// ---- Admin: view single request + reply ----
+bot.callbackQuery(/^req:(\d+)$/, async ctx => {
+  await ctx.answerCallbackQuery();
+  if (!isAdmin(ctx)) return;
+  const r = db.prepare("SELECT * FROM requests WHERE id=?").get(Number(ctx.match[1]));
+  if (!r) return ctx.reply("Request မတွေ့ပါ။", { reply_markup: adminMenu() });
+  const u = db.prepare("SELECT * FROM users WHERE id=?").get(r.user_id);
+  const text =
+    `📥 Request #${r.id}\n\n` +
+    `📌 အမျိုးအစား: ${r.type}\n` +
+    `👤 ${u ? u.first_name : "?"} (@${u ? u.username || "-" : "-"})\n` +
+    `📝 ${r.detail}\n` +
+    `📌 Status: ${r.status}\n` +
+    `🕐 ${r.created_at}` +
+    (r.reply ? `\n\n💬 ပြန်ကြားချက်: ${r.reply}` : "");
+  const kb = new InlineKeyboard()
+    .text("💬 ပြန်ဖြေရန်", `reqreply:${r.id}`).row()
+    .text("⬅️ Requests", "admin_requests");
+  await ctx.reply(text, { reply_markup: kb });
+});
+
+// ---- Admin: start replying to a request ----
+bot.callbackQuery(/^reqreply:(\d+)$/, async ctx => {
+  await ctx.answerCallbackQuery();
+  if (!isAdmin(ctx)) return;
+  const reqId = Number(ctx.match[1]);
+  pendingReply.set(ctx.from.id, reqId);
+  await ctx.reply(`💬 Request #${reqId} အတွက် ပြန်ကြားချက် ရိုက်ထည့်ပါ:\n\n(ပယ်ဖျက်ရန် /cancel ရိုက်ပါ)`, { reply_markup: adminMenu() });
 });
 
 bot.callbackQuery("users", async ctx => {
@@ -739,6 +1088,9 @@ bot.on("message:text", async ctx => {
       adminState.delete(ctx.from.id);
       pendingSearch.delete(ctx.from.id);
       pendingRequest.delete(ctx.from.id);
+      pendingOrder.delete(ctx.from.id);
+      pendingReply.delete(ctx.from.id);
+      pendingScreenshot.delete(ctx.from.id);
       return ctx.reply("❌ ပယ်ဖျက်ပြီးပါပြီ။", { reply_markup: isAdmin(ctx) ? adminMenu() : mainMenu() });
     }
     return;
@@ -759,6 +1111,9 @@ bot.on("message:text", async ctx => {
         db.prepare(`UPDATE products SET ${field}=? WHERE id=?`).run(text, id);
       }
       const p = db.prepare("SELECT * FROM products WHERE id=?").get(id);
+      saveDb();
+      // Auto-post price change to channel
+      if (field === "price" && p) { try { await postProductToChannel(p, "price"); } catch (e) {} }
       return ctx.reply(`✅ ပြင်ပြီးပါပြီ!\n\n📱 ${p.name}\n🏷️ ${p.category}\n📝 ${p.description}\n💰 ${money(p.price)}\n📦 Stock: ${p.stock}`, { reply_markup: adminMenu() });
     }
 
@@ -789,6 +1144,9 @@ bot.on("message:text", async ctx => {
         const info = db.prepare("INSERT INTO products (category, name, description, price, stock) VALUES (?,?,?,?,?)")
           .run(d.category, d.name, d.description, d.price, d.stock);
         adminState.delete(ctx.from.id);
+        // Auto-post new product to channel (if configured)
+        const newProd = db.prepare("SELECT * FROM products WHERE id=?").get(info.lastInsertRowid);
+        if (newProd) { try { await postProductToChannel(newProd, "new"); } catch (e) {} }
         return ctx.reply(
           `✅ Product အသစ် ထည့်ပြီးပါပြီ!\n\n🆔 #${info.lastInsertRowid}\n🏷️ ${d.category}\n📱 ${d.name}\n📝 ${d.description}\n💰 ${money(d.price)}\n📦 Stock: ${d.stock}`,
           { reply_markup: adminMenu() }
@@ -811,6 +1169,7 @@ bot.on("message:text", async ctx => {
       db.prepare("UPDATE products SET stock=? WHERE id=?").run(newStock, id);
       db.prepare("INSERT INTO stock_log (product_id, product_name, change, note) VALUES (?,?,?,?)")
         .run(id, p.name, change, "bot admin");
+      saveDb();
       return ctx.reply(`✅ Stock ပြင်ပြီးပါပြီ!\n\n📱 ${p.name}\n📦 ${p.stock} → ${newStock} (${change >= 0 ? "+" : ""}${change})`, { reply_markup: adminMenu() });
     }
   }
@@ -820,6 +1179,7 @@ bot.on("message:text", async ctx => {
     const ch = text.slice("setchannel:".length).trim();
     if (!ch) return ctx.reply("⚠️ Channel ID ရိုက်ထည့်ပါ။ ဥပမာ — setchannel: @kocho_channel");
     setSetting("channel_id", ch);
+    saveDb();
     // Try to verify the bot can access the channel
     let verify = "";
     try {
@@ -860,6 +1220,76 @@ bot.on("message:text", async ctx => {
     return ctx.reply(`✅ Broadcast finished.\nSent: ${sent}/${users.length}`);
   }
 
+  // ---- Order flow (customer info collection) ----
+  if (pendingOrder.has(ctx.from.id)) {
+    const st = pendingOrder.get(ctx.from.id);
+    const d = st.data;
+    if (st.step === "name") {
+      d.customer_name = text; st.step = "phone";
+      return ctx.reply("2️⃣ သင့်ဖုန်းနံပါတ် ရိုက်ထည့်ပါ:\n\n(ဥပမာ — 09xxxxxxxxx)");
+    }
+    if (st.step === "phone") {
+      d.customer_phone = text; st.step = "address";
+      return ctx.reply("3️⃣ ပစ္စည်းပို့ရန် လိပ်စာ ရိုက်ထည့်ပါ:\n\n(မြို့နယ် / လမ်း / အိမ်အမှတ်)");
+    }
+    if (st.step === "address") {
+      d.customer_address = text; st.step = "quantity";
+      return ctx.reply("4️⃣ အရေအတွက် (ဘယ်နှစ်လုံး) ရိုက်ထည့်ပါ:\n\n(ဥပမာ — 1)");
+    }
+    if (st.step === "quantity") {
+      const qty = Math.max(1, parseInt(text.replace(/[^0-9]/g, ""), 10) || 1);
+      d.quantity = qty;
+      const p = db.prepare("SELECT * FROM products WHERE id=?").get(st.productId);
+      if (!p) { pendingOrder.delete(ctx.from.id); return ctx.reply("Product မတွေ့ပါ။"); }
+      if (p.stock < qty) {
+        pendingOrder.delete(ctx.from.id);
+        return ctx.reply(`❌ Stock မလုံလောက်ပါ။\n\nလက်ကျန်: ${p.stock} လုံး\nသင်တောင်းဆိုသည်: ${qty} လုံး`, { reply_markup: mainMenu() });
+      }
+      const total = p.price * qty;
+      const fee = DELIVERY_FEE;
+      const info = db.prepare(
+        "INSERT INTO orders (user_id, product_id, product_name, price, quantity, customer_name, customer_phone, customer_address, delivery_fee) VALUES (?,?,?,?,?,?,?,?,?)"
+      ).run(ctx.from.id, p.id, p.name, total, qty, d.customer_name, d.customer_phone, d.customer_address, fee);
+      // Reduce stock
+      db.prepare("UPDATE products SET stock=stock-? WHERE id=?").run(qty, p.id);
+      db.prepare("INSERT INTO stock_log (product_id, product_name, change, note) VALUES (?,?,?,?)")
+        .run(p.id, p.name, -qty, `order #${info.lastInsertRowid}`);
+      pendingOrder.delete(ctx.from.id);
+      saveDb();
+      const kb = new InlineKeyboard()
+        .text("💳 ငွေလွှဲနည်း", "payment").row()
+        .text("📸 ငွေလွှဲ Screenshot တင်", `pay:${info.lastInsertRowid}`).row()
+        .text("🏠 Main Menu", "home");
+      await ctx.reply(
+        `✅ Order တင်ပြီးပါပြီ!\n\n🧾 Order ID: #${info.lastInsertRowid}\n📱 ${p.name}\n👤 ${d.customer_name}\n📞 ${d.customer_phone}\n📍 ${d.customer_address}\n🔢 အရေအတွက်: ${qty}\n💰 စုစုပေါင်း: ${money(total)}${fee ? `\n🚚 ပို့ဆောင်ခ: ${money(fee)}` : ""}\n\n` +
+        `ငွေလွှဲရန် "💳 ငွေလွှဲနည်း" ကိုနှိပ်ပါ။ Admin မှ ဆက်လက်ဆောင်ရွက်ပေးပါမည်။`,
+        { reply_markup: kb }
+      );
+      if (ADMIN_ID) {
+        try {
+          await bot.api.sendMessage(ADMIN_ID,
+            `🔔 New Order #${info.lastInsertRowid}\n👤 ${d.customer_name}\n📞 ${d.customer_phone}\n📍 ${d.customer_address}\n📱 ${p.name} x${qty}\n💰 ${money(total)}\nTG: @${ctx.from.username || "no_username"}`);
+        } catch (e) {}
+      }
+      return;
+    }
+  }
+
+  // ---- Admin: reply to a request ----
+  if (isAdmin(ctx) && pendingReply.has(ctx.from.id)) {
+    const reqId = pendingReply.get(ctx.from.id);
+    pendingReply.delete(ctx.from.id);
+    const r = db.prepare("SELECT * FROM requests WHERE id=?").get(reqId);
+    if (!r) return ctx.reply("Request မတွေ့ပါ။", { reply_markup: adminMenu() });
+    db.prepare("UPDATE requests SET reply=?, replied_at=CURRENT_TIMESTAMP, status='replied' WHERE id=?").run(text, reqId);
+    saveDb();
+    try {
+      await bot.api.sendMessage(r.user_id,
+        `📩 သင့် Request #${reqId} အတွက် Admin မှ ပြန်ကြားချက်:\n\n${text}\n\n📞 ဆက်သွယ်ရန်: 09779944100`);
+    } catch (e) {}
+    return ctx.reply(`✅ Request #${reqId} ကို ပြန်ဖြေပြီးပါပြီ။`, { reply_markup: adminMenu() });
+  }
+
   // ---- Search mode ----
   if (pendingSearch.has(ctx.from.id)) {
     pendingSearch.delete(ctx.from.id);
@@ -882,6 +1312,7 @@ bot.on("message:text", async ctx => {
     pendingRequest.delete(ctx.from.id);
     const info = db.prepare("INSERT INTO requests (user_id, type, detail) VALUES (?,?,?)")
       .run(ctx.from.id, type, text);
+    saveDb();
     await ctx.reply(
       `✅ သင့်တောင်းဆိုချက် လက်ခံရရှိပါပြီ!\n\n🧾 Request ID: #${info.lastInsertRowid}\n📝 ${text}\n\nAdmin မှ မကြာမီ ဆက်သွယ်ပေးပါမည်။`,
       { reply_markup: mainMenu() }
@@ -901,6 +1332,24 @@ bot.on("message:text", async ctx => {
 });
 
 bot.catch(err => console.error("BOT ERROR:", err.error));
+
+// ---- Photo handler: payment screenshot ----
+bot.on("message:photo", async ctx => {
+  saveUser(ctx);
+  if (!pendingScreenshot.has(ctx.from.id)) return;
+  const orderId = pendingScreenshot.get(ctx.from.id);
+  pendingScreenshot.delete(ctx.from.id);
+  const photos = ctx.message.photo;
+  const fileId = photos[photos.length - 1].file_id;
+  db.prepare("UPDATE orders SET payment_screenshot=? WHERE id=?").run(fileId, orderId);
+  saveDb();
+  await ctx.reply(`✅ Order #${orderId} အတွက် ငွေလွှဲ Screenshot ရရှိပါပြီ။ Admin မှ စစ်ဆေးပြီး အတည်ပြုပေးပါမည်။`, { reply_markup: mainMenu() });
+  if (ADMIN_ID) {
+    try {
+      await bot.api.sendPhoto(ADMIN_ID, fileId, { caption: `📸 Payment screenshot for Order #${orderId}\n👤 ${ctx.from.first_name} (@${ctx.from.username || "no_username"})` });
+    } catch (e) {}
+  }
+});
 
 // ---------------------------------------------------------------------------
 // HTTP SERVER + ADMIN API
@@ -954,17 +1403,23 @@ app.post("/api/admin/products", adminAuth, (req, res) => {
   res.json({ ok: true, id: info.lastInsertRowid });
 });
 
-app.put("/api/admin/products/:id", adminAuth, (req, res) => {
+app.put("/api/admin/products/:id", adminAuth, async (req, res) => {
   const id = Number(req.params.id);
   const p = db.prepare("SELECT * FROM products WHERE id=?").get(id);
   if (!p) return res.status(404).json({ ok: false, error: "not found" });
   const { category, name, description, price, stock, active } = req.body || {};
+  const priceChanged = price != null && Number(price) !== p.price;
   db.prepare("UPDATE products SET category=?, name=?, description=?, price=?, stock=?, active=? WHERE id=?")
     .run(
       category ?? p.category, name ?? p.name, description ?? p.description,
       price != null ? Number(price) : p.price, stock != null ? Number(stock) : p.stock,
       active != null ? (active ? 1 : 0) : p.active, id
     );
+  saveDb();
+  if (priceChanged) {
+    const np = db.prepare("SELECT * FROM products WHERE id=?").get(id);
+    try { await postProductToChannel(np, "price"); } catch (e) {}
+  }
   res.json({ ok: true });
 });
 
@@ -986,6 +1441,7 @@ app.post("/api/admin/products/:id/stock", adminAuth, (req, res) => {
   db.prepare("UPDATE products SET stock=? WHERE id=?").run(newStock, id);
   db.prepare("INSERT INTO stock_log (product_id, product_name, change, note) VALUES (?,?,?,?)")
     .run(id, p.name, delta, "miniapp admin");
+  saveDb();
   res.json({ ok: true, stock: newStock });
 });
 
@@ -1027,3 +1483,16 @@ if (PUBLIC_URL && /^https?:\/\//.test(PUBLIC_URL)) {
 }
 
 bot.start({ onStart: info => console.log(`Bot started: @${info.username}`) });
+
+// ---- Startup: pull DB snapshot from GitHub, then seed if still empty ----
+(async () => {
+  try {
+    await pullFromGitHub();
+  } catch (e) { console.log("pull error:", e.message); }
+  seedIfEmpty();
+  // Periodic backup every 5 minutes
+  if (GITHUB_TOKEN && GITHUB_REPO) {
+    setInterval(() => { pushToGitHub(); }, 5 * 60 * 1000);
+    console.log(`DB persistence enabled -> ${GITHUB_REPO}/${SNAPSHOT_PATH}`);
+  }
+})();
