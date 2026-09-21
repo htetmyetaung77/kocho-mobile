@@ -1,0 +1,19 @@
+{
+  "name": "telegram-business-bot",
+  "version": "2.0.0",
+  "description": "Telegram business bot with shop, orders, admin, broadcast, AI-ready chat and Mini App",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.7.0",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "grammy": "^1.35.0"
+  },
+  "allowScripts": {
+    "better-sqlite3@11.10.0": true
+  }
+}

@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="my">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>Ko Cho Mobile — Admin Panel</title>
+<style>
+  :root{--brand:#e11d2a;--brand2:#b3121d;--bg:#0d0d0d;--card:#1a1a1a;--card2:#222;--text:#f5f5f5;--muted:#a0a0a0;--ok:#22c55e;--warn:#f59e0b;--line:#2a2a2a}
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  body{font-family:'Segoe UI',Arial,sans-serif;margin:0;padding:0;background:var(--bg);color:var(--text);padding-bottom:80px}
+  header{background:linear-gradient(135deg,#000,#1a0000);padding:16px 18px;text-align:center;border-bottom:2px solid var(--brand);position:sticky;top:0;z-index:20}
+  header h1{margin:0;font-size:18px;letter-spacing:1px;color:var(--brand)}
+  header p{margin:4px 0 0;font-size:12px;color:var(--muted)}
+  .wrap{padding:14px;max-width:720px;margin:0 auto}
+  .card{background:var(--card);border-radius:14px;padding:14px;margin:10px 0;box-shadow:0 3px 14px rgba(0,0,0,.4);border:1px solid var(--line)}
+  .card h3{margin:0 0 10px;font-size:15px;color:var(--brand)}
+  label{display:block;font-size:12px;color:var(--muted);margin:8px 0 4px}
+  input,select,textarea{width:100%;background:#111;border:1px solid var(--line);border-radius:10px;padding:11px;color:var(--text);font-size:14px;font-family:inherit}
+  input:focus,select:focus,textarea:focus{outline:none;border-color:var(--brand)}
+  .btn{border:0;border-radius:10px;padding:12px 14px;font-weight:700;font-size:14px;cursor:pointer;background:var(--brand);color:#fff;width:100%;margin-top:10px}
+  .btn:active{transform:scale(.98)}
+  .btn-sm{padding:8px 10px;font-size:12px;width:auto;margin:0}
+  .btn-outline{background:transparent;color:var(--brand);border:2px solid var(--brand)}
+  .btn-ghost{background:#2a2a2a;color:var(--text)}
+  .btn-ok{background:var(--ok)}
+  .btn-warn{background:var(--warn);color:#111}
+  .btn-danger{background:#7f1d1d}
+  .row{display:flex;gap:8px;flex-wrap:wrap}
+  .row>*{flex:1}
+  .row .btn-sm{flex:0 0 auto}
+  .stats{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+  .stat{background:var(--card2);border-radius:12px;padding:12px;text-align:center;border:1px solid var(--line)}
+  .stat b{display:block;font-size:20px;color:var(--brand)}
+  .stat span{font-size:11px;color:var(--muted)}
+  .prod{background:var(--card2);border-radius:12px;padding:12px;margin:8px 0;border:1px solid var(--line)}
+  .prod .top{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}
+  .prod .name{font-weight:700;font-size:14px}
+  .prod .cat{font-size:11px;color:var(--brand);background:#2a0000;border-radius:20px;padding:2px 10px;display:inline-block;margin-top:2px}
+  .prod .price{font-size:15px;font-weight:700;color:var(--ok);white-space:nowrap}
+  .prod .desc{font-size:12px;color:var(--muted);margin:6px 0}
+  .prod .stock{font-size:12px;margin:6px 0}
+  .badge{display:inline-block;border-radius:20px;padding:2px 10px;font-size:11px;font-weight:700}
+  .badge-in{background:#052e16;color:var(--ok)}
+  .badge-out{background:#450a0a;color:#f87171}
+  .badge-off{background:#333;color:var(--muted)}
+  .hidden{display:none!important}
+  .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#111;border:1px solid var(--brand);color:#fff;padding:12px 18px;border-radius:12px;font-size:13px;z-index:100;box-shadow:0 6px 24px rgba(0,0,0,.6);max-width:90%}
+  .toast.ok{border-color:var(--ok)}
+  .toast.err{border-color:#f87171}
+  .muted{color:var(--muted);font-size:12px}
+  .searchbar{display:flex;gap:8px;margin-bottom:8px}
+  .searchbar input{flex:1}
+  .tabs{display:flex;gap:6px;margin:10px 0;overflow-x:auto;padding-bottom:4px}
+  .tab{background:var(--card2);border:1px solid var(--line);color:var(--muted);border-radius:20px;padding:8px 14px;font-size:13px;white-space:nowrap;cursor:pointer}
+  .tab.active{background:var(--brand);color:#fff;border-color:var(--brand)}
+  .modal{position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:50;display:flex;align-items:flex-end;justify-content:center}
+  .modal .sheet{background:var(--card);width:100%;max-width:720px;border-radius:18px 18px 0 0;padding:18px;max-height:90vh;overflow-y:auto;border-top:2px solid var(--brand)}
+  .modal h3{margin:0 0 6px;color:var(--brand)}
+  .stockrow{display:flex;gap:6px;align-items:center;margin-top:8px}
+  .stockrow input{flex:1}
+  .center{text-align:center}
+  .logo{width:90px;margin-bottom:6px}
+</style>
+<script src="https://sites.super.myninja.ai/_assets/ninja-daytona-script.js"></script>
+</head>
+<body>
+
+<header>
+  <h1>⚙️ KO CHO MOBILE — ADMIN</h1>
+  <p>ဆိုင်ပိုင်ရှင် စီမံခန့်ခွဲမှု ပန်နယ်</p>
+</header>
+
+<!-- LOGIN -->
+<div id="loginView" class="wrap">
+  <div class="card center">
+    <img class="logo" src="logo.png" alt="logo">
+    <h3>🔐 Admin Login</h3>
+    <p class="muted">စီမံခန့်ခွဲရန် လျှို့ဝှက်နံပါတ် (password) ထည့်ပါ</p>
+    <label>Password</label>
+    <input id="pw" type="password" placeholder="••••••••" autocomplete="current-password">
+    <button class="btn" onclick="login()">ဝင်ရောက်မည်</button>
+    <p class="muted" style="margin-top:10px">Default: <b>kocho2024</b> (server မှာ ADMIN_PASSWORD ပြောင်းနိုင်သည်)</p>
+  </div>
+</div>
+
+<!-- DASHBOARD -->
+<div id="appView" class="wrap hidden">
+  <div class="row" style="margin-bottom:6px">
+    <button class="btn btn-ghost btn-sm" onclick="loadAll()">🔄 Refresh</button>
+    <button class="btn btn-danger btn-sm" onclick="logout()">🚪 Logout</button>
+  </div>
+
+  <!-- STATS -->
+  <div class="card">
+    <h3>📊 စာရင်း အနှစ်ချုပ်</h3>
+    <div class="stats" id="stats"></div>
+  </div>
+
+  <!-- TABS -->
+  <div class="tabs">
+    <div class="tab active" data-tab="products" onclick="switchTab('products')">📱 Products</div>
+    <div class="tab" data-tab="add" onclick="switchTab('add')">➕ Add</div>
+    <div class="tab" data-tab="stock" onclick="switchTab('stock')">📦 Stock Log</div>
+    <div class="tab" data-tab="orders" onclick="switchTab('orders')">🧾 Orders</div>
+    <div class="tab" data-tab="requests" onclick="switchTab('requests')">📨 Requests</div>
+  </div>
+
+  <!-- PRODUCTS -->
+  <div id="tab-products">
+    <div class="card">
+      <h3>📱 ပစ္စည်းစာရင်း / ဈေးနှုန်း ပြင်ဆင်ရန်</h3>
+      <div class="searchbar">
+        <input id="search" placeholder="🔍 ရှာဖွေ (name)..." oninput="renderProducts()">
+        <select id="catFilter" onchange="renderProducts()"><option value="">All</option></select>
+      </div>
+      <div id="productList"></div>
+    </div>
+  </div>
+
+  <!-- ADD -->
+  <div id="tab-add" class="hidden">
+    <div class="card">
+      <h3>➕ ပစ္စည်းအသစ် ထည့်ရန်</h3>
+      <label>Category</label>
+      <input id="a_cat" list="catList" placeholder="ဥပမာ iPhone">
+      <datalist id="catList"></datalist>
+      <label>Name *</label>
+      <input id="a_name" placeholder="iPhone 15 Pro Max 256GB">
+      <label>Description</label>
+      <textarea id="a_desc" rows="2" placeholder="အရောင် / storage / အခြေအနေ"></textarea>
+      <div class="row">
+        <div><label>Price (Ks)</label><input id="a_price" type="number" placeholder="0"></div>
+        <div><label>Stock</label><input id="a_stock" type="number" placeholder="0"></div>
+      </div>
+      <button class="btn" onclick="addProduct()">💾 သိမ်းမည်</button>
+    </div>
+  </div>
+
+  <!-- STOCK LOG -->
+  <div id="tab-stock" class="hidden">
+    <div class="card">
+      <h3>📦 ပစ္စည်းအဝင်ထွက် မှတ်တမ်း</h3>
+      <p class="muted">Stock ပြောင်းလဲမှုများ (Mini App + Bot) မှတ်တမ်း</p>
+      <div id="stockLog"></div>
+    </div>
+  </div>
+
+  <!-- ORDERS -->
+  <div id="tab-orders" class="hidden">
+    <div class="card">
+      <h3>🧾 Orders</h3>
+      <div id="ordersList"></div>
+    </div>
+  </div>
+
+  <!-- REQUESTS -->
+  <div id="tab-requests" class="hidden">
+    <div class="card">
+      <h3>📨 Requests</h3>
+      <div id="requestsList"></div>
+    </div>
+  </div>
+</div>
+
+<!-- EDIT MODAL -->
+<div id="editModal" class="modal hidden">
+  <div class="sheet">
+    <h3>✏️ ပြင်ဆင်ရန်</h3>
+    <input type="hidden" id="e_id">
+    <label>Category</label>
+    <input id="e_cat" list="catList">
+    <label>Name</label>
+    <input id="e_name">
+    <label>Description</label>
+    <textarea id="e_desc" rows="2"></textarea>
+    <div class="row">
+      <div><label>Price (Ks)</label><input id="e_price" type="number"></div>
+      <div><label>Stock</label><input id="e_stock" type="number"></div>
+    </div>
+    <label>Active (ဖော်ပြမည်)</label>
+    <select id="e_active"><option value="1">Yes — ဖော်ပြမည်</option><option value="0">No — ဖျောက်မည်</option></select>
+    <div class="row" style="margin-top:12px">
+      <button class="btn btn-ok" onclick="saveEdit()">💾 Save</button>
+      <button class="btn btn-ghost" onclick="closeEdit()">Cancel</button>
+    </div>
+    <button class="btn btn-danger" onclick="deleteProduct()">🗑️ Delete</button>
+  </div>
+</div>
+
+<script>
+const API = "";
+let PW = localStorage.getItem("kocho_admin_pw") || "";
+let PRODUCTS = [];
+let CATS = [];
+
+function toast(msg, type){
+  const t = document.createElement("div");
+  t.className = "toast " + (type||"");
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(()=>t.remove(), 2600);
+}
+function money(n){ return Number(n||0).toLocaleString("en-US") + " Ks"; }
+function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+
+async function api(path, opts={}){
+  opts.headers = Object.assign({"Content-Type":"application/json","x-admin-password":PW}, opts.headers||{});
+  const r = await fetch(API+path, opts);
+  if(r.status===401){ logout(); throw new Error("unauthorized"); }
+  return r.json();
+}
+
+async function login(){
+  const pw = document.getElementById("pw").value.trim();
+  if(!pw) return toast("Password ထည့်ပါ","err");
+  try{
+    const r = await fetch(API+"/api/admin/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({password:pw})});
+    const j = await r.json();
+    if(j.ok){ PW = pw; localStorage.setItem("kocho_admin_pw", pw); showApp(); toast("ဝင်ရောက်ပြီးပါပြီ ✅","ok"); }
+    else toast("Password မှားနေသည် ❌","err");
+  }catch(e){ toast("Server ချိတ်ဆက်မှု မအောင်မြင်ပါ","err"); }
+}
+function logout(){ PW=""; localStorage.removeItem("kocho_admin_pw"); document.getElementById("appView").classList.add("hidden"); document.getElementById("loginView").classList.remove("hidden"); }
+function showApp(){ document.getElementById("loginView").classList.add("hidden"); document.getElementById("appView").classList.remove("hidden"); loadAll(); }
+
+function switchTab(name){
+  document.querySelectorAll(".tab").forEach(t=>t.classList.toggle("active", t.dataset.tab===name));
+  ["products","add","stock","orders","requests"].forEach(n=>{
+    document.getElementById("tab-"+n).classList.toggle("hidden", n!==name);
+  });
+}
+
+async function loadAll(){
+  try{
+    const [p, s] = await Promise.all([api("/api/admin/products"), api("/api/admin/stats")]);
+    PRODUCTS = p.products || [];
+    CATS = [...new Set(PRODUCTS.map(x=>x.category))].sort();
+    renderStats(s.stats);
+    renderCatOptions();
+    renderProducts();
+    loadStockLog();
+    loadOrders();
+    loadRequests();
+  }catch(e){ /* handled */ }
+}
+
+function renderStats(st){
+  if(!st) return;
+  document.getElementById("stats").innerHTML = `
+    <div class="stat"><b>${st.products}</b><span>ပစ္စည်း</span></div>
+    <div class="stat"><b>${st.users}</b><span>အသုံးပြုသူ</span></div>
+    <div class="stat"><b>${st.orders}</b><span>Orders</span></div>
+    <div class="stat"><b>${st.requests}</b><span>Requests</span></div>
+    <div class="stat" style="grid-column:span 2"><b>${money(st.revenue)}</b><span>စုစုပေါင်း တန်ဖိုး</span></div>`;
+}
+
+function renderCatOptions(){
+  const cf = document.getElementById("catFilter");
+  const cur = cf.value;
+  cf.innerHTML = '<option value="">All Categories</option>' + CATS.map(c=>`<option>${esc(c)}</option>`).join("");
+  cf.value = cur;
+  document.getElementById("catList").innerHTML = CATS.map(c=>`<option value="${esc(c)}">`).join("");
+}
+
+function renderProducts(){
+  const q = (document.getElementById("search").value||"").toLowerCase();
+  const cf = document.getElementById("catFilter").value;
+  let list = PRODUCTS.filter(p=>{
+    if(cf && p.category!==cf) return false;
+    if(q && !(p.name||"").toLowerCase().includes(q)) return false;
+    return true;
+  });
+  const el = document.getElementById("productList");
+  if(!list.length){ el.innerHTML = '<p class="muted center">ပစ္စည်း မတွေ့ပါ</p>'; return; }
+  el.innerHTML = list.map(p=>{
+    const stockBadge = p.stock>0 ? `<span class="badge badge-in">Stock: ${p.stock}</span>` : `<span class="badge badge-out">Stock: 0 (ကုန်)</span>`;
+    const offBadge = p.active ? "" : ` <span class="badge badge-off">Hidden</span>`;
+    return `<div class="prod">
+      <div class="top">
+        <div>
+          <div class="name">${esc(p.name)}</div>
+          <span class="cat">${esc(p.category)}</span>${offBadge}
+        </div>
+        <div class="price">${money(p.price)}</div>
+      </div>
+      ${p.description?`<div class="desc">${esc(p.description)}</div>`:""}
+      <div class="stock">${stockBadge}</div>
+      <div class="row">
+        <button class="btn btn-sm btn-outline" onclick="openEdit(${p.id})">✏️ ပြင်</button>
+        <button class="btn btn-sm btn-ok" onclick="quickStock(${p.id},1)">➕ ဝင်</button>
+        <button class="btn btn-sm btn-warn" onclick="quickStock(${p.id},-1)">➖ ထွက်</button>
+        <button class="btn btn-sm btn-ghost" onclick="toggleActive(${p.id})">${p.active?"👁️ ဖျောက်":"👁️ ဖော်"}</button>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+function openEdit(id){
+  const p = PRODUCTS.find(x=>x.id===id); if(!p) return;
+  document.getElementById("e_id").value = p.id;
+  document.getElementById("e_cat").value = p.category;
+  document.getElementById("e_name").value = p.name;
+  document.getElementById("e_desc").value = p.description||"";
+  document.getElementById("e_price").value = p.price;
+  document.getElementById("e_stock").value = p.stock;
+  document.getElementById("e_active").value = p.active ? "1" : "0";
+  document.getElementById("editModal").classList.remove("hidden");
+}
+function closeEdit(){ document.getElementById("editModal").classList.add("hidden"); }
+
+async function saveEdit(){
+  const id = document.getElementById("e_id").value;
+  const body = {
+    category: document.getElementById("e_cat").value.trim() || "Other",
+    name: document.getElementById("e_name").value.trim(),
+    description: document.getElementById("e_desc").value.trim(),
+    price: Number(document.getElementById("e_price").value)||0,
+    stock: Number(document.getElementById("e_stock").value)||0,
+    active: document.getElementById("e_active").value === "1"
+  };
+  if(!body.name) return toast("Name ထည့်ပါ","err");
+  await api("/api/admin/products/"+id, {method:"PUT", body:JSON.stringify(body)});
+  closeEdit(); toast("သိမ်းပြီးပါပြီ ✅","ok"); loadAll();
+}
+
+async function deleteProduct(){
+  const id = document.getElementById("e_id").value;
+  if(!confirm("ဒီပစ္စည်းကို ဖျက်မှာ သေချာလား?")) return;
+  await api("/api/admin/products/"+id, {method:"DELETE"});
+  closeEdit(); toast("ဖျက်ပြီးပါပြီ 🗑️","ok"); loadAll();
+}
+
+async function toggleActive(id){
+  const p = PRODUCTS.find(x=>x.id===id); if(!p) return;
+  await api("/api/admin/products/"+id, {method:"PUT", body:JSON.stringify({active: !p.active})});
+  toast(p.active?"ဖျောက်လိုက်ပါပြီ":"ဖော်ပြလိုက်ပါပြီ","ok"); loadAll();
+}
+
+async function quickStock(id, dir){
+  const p = PRODUCTS.find(x=>x.id===id); if(!p) return;
+  const val = prompt(`${p.name}\nလက်ရှိ Stock: ${p.stock}\n\n${dir>0?"အဝင်":"အထွက်"} အရေအတွက် ထည့်ပါ:`, "1");
+  if(val===null) return;
+  const n = Math.abs(Number(val)||0);
+  if(!n) return;
+  await api("/api/admin/products/"+id+"/stock", {method:"POST", body:JSON.stringify({change: dir>0 ? n : -n})});
+  toast(`${dir>0?"အဝင်":"အထွက်"} ${n} မှတ်ပြီးပါပြီ ✅`,"ok"); loadAll();
+}
+
+async function addProduct(){
+  const body = {
+    category: document.getElementById("a_cat").value.trim() || "Other",
+    name: document.getElementById("a_name").value.trim(),
+    description: document.getElementById("a_desc").value.trim(),
+    price: Number(document.getElementById("a_price").value)||0,
+    stock: Number(document.getElementById("a_stock").value)||0
+  };
+  if(!body.name) return toast("Name ထည့်ပါ","err");
+  await api("/api/admin/products", {method:"POST", body:JSON.stringify(body)});
+  document.getElementById("a_name").value=""; document.getElementById("a_desc").value="";
+  document.getElementById("a_price").value=""; document.getElementById("a_stock").value="";
+  toast("ပစ္စည်းအသစ် ထည့်ပြီးပါပြီ ✅","ok"); loadAll(); switchTab("products");
+}
+
+async function loadStockLog(){
+  try{
+    const r = await api("/api/admin/stock-log");
+    const rows = r.log || [];
+    document.getElementById("stockLog").innerHTML = rows.length ? rows.map(l=>{
+      const sign = l.change>0 ? `<span class="badge badge-in">+${l.change}</span>` : `<span class="badge badge-out">${l.change}</span>`;
+      return `<div class="prod"><div class="top"><div class="name">${esc(l.product_name)}</div>${sign}</div>
+        <div class="muted">${esc(l.note||"")} • ${esc(l.created_at||"")}</div></div>`;
+    }).join("") : '<p class="muted center">မှတ်တမ်း မရှိသေးပါ</p>';
+  }catch(e){}
+}
+
+async function loadOrders(){
+  try{
+    const r = await api("/api/admin/orders");
+    const rows = r.orders || [];
+    document.getElementById("ordersList").innerHTML = rows.length ? rows.map(o=>`
+      <div class="prod"><div class="top"><div class="name">${esc(o.product_name||"-")}</div><div class="price">${money(o.price)}</div></div>
+      <div class="muted">User: ${esc(o.user_id)} • ${esc(o.status)} • ${esc(o.created_at||"")}</div></div>`).join("")
+      : '<p class="muted center">Order မရှိသေးပါ</p>';
+  }catch(e){}
+}
+
+async function loadRequests(){
+  try{
+    const r = await api("/api/admin/requests");
+    const rows = r.requests || [];
+    document.getElementById("requestsList").innerHTML = rows.length ? rows.map(q=>`
+      <div class="prod"><div class="top"><div class="name">${esc(q.type)}</div><span class="badge badge-off">${esc(q.status)}</span></div>
+      <div class="desc">${esc(q.detail||"")}</div>
+      <div class="muted">User: ${esc(q.user_id)} • ${esc(q.created_at||"")}</div></div>`).join("")
+      : '<p class="muted center">Request မရှိသေးပါ</p>';
+  }catch(e){}
+}
+
+// auto-login if password saved
+if(PW){ showApp(); }
+</script>
+</body>
+</html>

@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: kocho-mobile-bot
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: ADMIN_ID
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: BOT_USERNAME
+        value: kocho_mobile_service_bot
+      - key: PUBLIC_URL
+        sync: false
+      - key: CHANNEL_ID
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: PORT
+        value: 3000
