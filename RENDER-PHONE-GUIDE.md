@@ -8,9 +8,9 @@
 
 | Key | Value |
 |---|---|
-| BOT_TOKEN | `8941636635:AAEJUcZSuMa743TAMPwy25LaknxSj7bK-1U` |
+| BOT_TOKEN | 8941636635:AAHu9i92AkMUBTwU1ltrDE4kJRu3zVdQ__E |
 | ADMIN_ID | `8927464164` |
-| ADMIN_PASSWORD | `kocho2024` (ကိုယ်ပိုင် ပြောင်းနိုင်) |
+| ADMIN_PASSWORD | `@Love12345` (ကိုယ်ပိုင် ပြောင်းနိုင်) |
 | BOT_USERNAME | `kocho_mobile_service_bot` |
 
 ---
