@@ -8,7 +8,7 @@
 
 | Key | Value |
 |---|---|
-| BOT_TOKEN | 8941636635:AAHu9i92AkMUBTwU1ltrDE4kJRu3zVdQ__E |
+| BOT_TOKEN | SET_IN_RENDER_SECRET_ENV |
 | ADMIN_ID | `8927464164` |
 | ADMIN_PASSWORD | `@Love12345` (ကိုယ်ပိုင် ပြောင်းနိုင်) |
 | BOT_USERNAME | `kocho_mobile_service_bot` |
@@ -40,7 +40,7 @@ Render dashboard မှာ service ကို ရွေးပြီး **Environm
 
 | Key | Value |
 |---|---|
-| `BOT_TOKEN` | `8941636635:AAEJUcZSuMa743TAMPwy25LaknxSj7bK-1U` |
+| `BOT_TOKEN` | `SET_IN_RENDER_SECRET_ENV` |
 | `ADMIN_ID` | `8927464164` |
 | `ADMIN_PASSWORD` | `kocho2024` |
 | `BOT_USERNAME` | `kocho_mobile_service_bot` |

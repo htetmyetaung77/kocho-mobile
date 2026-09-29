@@ -596,6 +596,45 @@ const pendingOrder = new Map();   // userId -> { productId, step, data }
 const pendingReply = new Map();   // adminId -> requestId (reply to request)
 const pendingScreenshot = new Map(); // userId -> orderId (payment screenshot)
 
+// Reserve stock only after the customer confirms checkout. SQLite transaction
+// prevents two simultaneous checkouts from overselling the same product.
+const createOrderTransaction = db.transaction((userId, st) => {
+  const d = st.data;
+  const qty = Number(d.quantity || 1);
+  const p = db.prepare("SELECT * FROM products WHERE id=? AND active=1").get(st.productId);
+  if (!p) throw new Error("PRODUCT_NOT_FOUND");
+  if (p.stock < qty) throw new Error("INSUFFICIENT_STOCK");
+  const total = p.price * qty;
+  const fee = DELIVERY_FEE;
+  const info = db.prepare(
+    "INSERT INTO orders (user_id, product_id, product_name, price, quantity, customer_name, customer_phone, customer_address, delivery_fee) VALUES (?,?,?,?,?,?,?,?,?)"
+  ).run(userId, p.id, p.name, total, qty, d.customer_name, d.customer_phone, d.customer_address, fee);
+  db.prepare("UPDATE products SET stock=stock-? WHERE id=?").run(qty, p.id);
+  db.prepare("INSERT INTO stock_log (product_id, product_name, change, note) VALUES (?,?,?,?)")
+    .run(p.id, p.name, -qty, `order #${info.lastInsertRowid}`);
+  return { orderId: Number(info.lastInsertRowid), product: p, total, fee, quantity: qty, customer: d };
+});
+
+async function sendOrderConfirmation(ctx, order) {
+  const { orderId, product: p, total, fee, quantity: qty, customer: d } = order;
+  const kb = new InlineKeyboard()
+    .text("💳 ငွေလွှဲနည်း", "payment").row()
+    .text("📸 ငွေလွှဲ Screenshot တင်", `pay:${orderId}`).row()
+    .text("📦 My Orders", "myorders").row()
+    .text("🏠 Main Menu", "home");
+  await ctx.reply(
+    `✅ Order တင်ပြီးပါပြီ!\n\n🧾 Order ID: #${orderId}\n📱 ${p.name}\n👤 ${d.customer_name}\n📞 ${d.customer_phone}\n📍 ${d.customer_address}\n🔢 အရေအတွက်: ${qty}\n💰 စုစုပေါင်း: ${money(total)}${fee ? `\n🚚 ပို့ဆောင်ခ: ${money(fee)}` : ""}\n\n` +
+    `ငွေလွှဲရန် "💳 ငွေလွှဲနည်း" ကိုနှိပ်ပါ။ Admin မှ ဆက်လက်ဆောင်ရွက်ပေးပါမည်။`,
+    { reply_markup: kb }
+  );
+  if (ADMIN_ID) {
+    try {
+      await bot.api.sendMessage(ADMIN_ID,
+        `🔔 New Order #${orderId}\n👤 ${d.customer_name}\n📞 ${d.customer_phone}\n📍 ${d.customer_address}\n📱 ${p.name} x${qty}\n💰 ${money(total)}\nTG: @${ctx.from.username || "no_username"}`);
+    } catch (e) { console.error("order admin notification failed:", e.message); }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // COMMANDS
 // ---------------------------------------------------------------------------
@@ -742,6 +781,31 @@ bot.callbackQuery(/^order:(\d+)$/, async ctx => {
   );
 });
 
+bot.callbackQuery("checkout_cancel", async ctx => {
+  await ctx.answerCallbackQuery();
+  pendingOrder.delete(ctx.from.id);
+  await ctx.reply("❌ Checkout ကို ပယ်ဖျက်ပြီးပါပြီ။ Product ကို ပြန်ရွေးနိုင်ပါတယ်။", { reply_markup: mainMenu() });
+});
+bot.callbackQuery(/^checkout_confirm:(\d+)$/, async ctx => {
+  await ctx.answerCallbackQuery();
+  const st = pendingOrder.get(ctx.from.id);
+  if (!st || st.step !== "confirm" || Number(st.productId) !== Number(ctx.match[1])) {
+    return ctx.reply("⚠️ ဒီ Checkout session သက်တမ်းကုန်သွားပါပြီ။ Product ကို ပြန်ရွေးပါ။", { reply_markup: mainMenu() });
+  }
+  try {
+    const order = createOrderTransaction(ctx.from.id, st);
+    pendingOrder.delete(ctx.from.id);
+    saveDb();
+    await sendOrderConfirmation(ctx, order);
+  } catch (e) {
+    pendingOrder.delete(ctx.from.id);
+    if (e.message === "INSUFFICIENT_STOCK") {
+      return ctx.reply("❌ အခြား customer မှာယူသွားသောကြောင့် Stock မလုံလောက်တော့ပါ။", { reply_markup: mainMenu() });
+    }
+    console.error("checkout failed:", e);
+    await ctx.reply("⚠️ Checkout ပြုလုပ်ရာတွင် အမှားဖြစ်ပါသည်။ Admin ကို ဆက်သွယ်ပါ။", { reply_markup: mainMenu() });
+  }
+});
 bot.callbackQuery("payment", async ctx => { await ctx.answerCallbackQuery(); await ctx.reply(PAYMENT_INFO, { reply_markup: mainMenu() }); });
 
 // ---- Payment screenshot upload ----
@@ -1240,42 +1304,27 @@ bot.on("message:text", async ctx => {
     if (st.step === "quantity") {
       const qty = Math.max(1, parseInt(text.replace(/[^0-9]/g, ""), 10) || 1);
       d.quantity = qty;
-      const p = db.prepare("SELECT * FROM products WHERE id=?").get(st.productId);
+      const p = db.prepare("SELECT * FROM products WHERE id=? AND active=1").get(st.productId);
       if (!p) { pendingOrder.delete(ctx.from.id); return ctx.reply("Product မတွေ့ပါ။"); }
       if (p.stock < qty) {
         pendingOrder.delete(ctx.from.id);
         return ctx.reply(`❌ Stock မလုံလောက်ပါ။\n\nလက်ကျန်: ${p.stock} လုံး\nသင်တောင်းဆိုသည်: ${qty} လုံး`, { reply_markup: mainMenu() });
       }
+      st.step = "confirm";
       const total = p.price * qty;
       const fee = DELIVERY_FEE;
-      const info = db.prepare(
-        "INSERT INTO orders (user_id, product_id, product_name, price, quantity, customer_name, customer_phone, customer_address, delivery_fee) VALUES (?,?,?,?,?,?,?,?,?)"
-      ).run(ctx.from.id, p.id, p.name, total, qty, d.customer_name, d.customer_phone, d.customer_address, fee);
-      // Reduce stock
-      db.prepare("UPDATE products SET stock=stock-? WHERE id=?").run(qty, p.id);
-      db.prepare("INSERT INTO stock_log (product_id, product_name, change, note) VALUES (?,?,?,?)")
-        .run(p.id, p.name, -qty, `order #${info.lastInsertRowid}`);
-      pendingOrder.delete(ctx.from.id);
-      saveDb();
-      const kb = new InlineKeyboard()
-        .text("💳 ငွေလွှဲနည်း", "payment").row()
-        .text("📸 ငွေလွှဲ Screenshot တင်", `pay:${info.lastInsertRowid}`).row()
-        .text("🏠 Main Menu", "home");
-      await ctx.reply(
-        `✅ Order တင်ပြီးပါပြီ!\n\n🧾 Order ID: #${info.lastInsertRowid}\n📱 ${p.name}\n👤 ${d.customer_name}\n📞 ${d.customer_phone}\n📍 ${d.customer_address}\n🔢 အရေအတွက်: ${qty}\n💰 စုစုပေါင်း: ${money(total)}${fee ? `\n🚚 ပို့ဆောင်ခ: ${money(fee)}` : ""}\n\n` +
-        `ငွေလွှဲရန် "💳 ငွေလွှဲနည်း" ကိုနှိပ်ပါ။ Admin မှ ဆက်လက်ဆောင်ရွက်ပေးပါမည်။`,
-        { reply_markup: kb }
+      const confirmKb = new InlineKeyboard()
+        .text("✅ အတည်ပြု၍ Order တင်မည်", `checkout_confirm:${p.id}`).row()
+        .text("❌ မတင်တော့ပါ", "checkout_cancel");
+      return ctx.reply(
+        `🧾 Checkout အချက်အလက် စစ်ဆေးပါ\n\n📱 ${p.name}\n💰 တစ်လုံး: ${money(p.price)}\n🔢 အရေအတွက်: ${qty}\n💵 ပစ္စည်းဖိုး: ${money(total)}${fee ? `\n🚚 ပို့ဆောင်ခ: ${money(fee)}` : ""}\n👤 ${d.customer_name}\n📞 ${d.customer_phone}\n📍 ${d.customer_address}\n\nအချက်အလက်မှန်ကန်ပါက အောက်ပါ Confirm ကိုနှိပ်ပါ။`,
+        { reply_markup: confirmKb }
       );
-      if (ADMIN_ID) {
-        try {
-          await bot.api.sendMessage(ADMIN_ID,
-            `🔔 New Order #${info.lastInsertRowid}\n👤 ${d.customer_name}\n📞 ${d.customer_phone}\n📍 ${d.customer_address}\n📱 ${p.name} x${qty}\n💰 ${money(total)}\nTG: @${ctx.from.username || "no_username"}`);
-        } catch (e) {}
-      }
-      return;
+    }
+    if (st.step === "confirm") {
+      return ctx.reply("Checkout အချက်အလက်ကို Confirm သို့မဟုတ် Cancel ခလုတ်ဖြင့် ရွေးချယ်ပါ။");
     }
   }
-
   // ---- Admin: reply to a request ----
   if (isAdmin(ctx) && pendingReply.has(ctx.from.id)) {
     const reqId = pendingReply.get(ctx.from.id);
