@@ -511,7 +511,7 @@ bot.callbackQuery(/^myord:(\d+)$/, async ctx => {
   await ctx.answerCallbackQuery();
   const o = db.prepare("SELECT * FROM orders WHERE id=? AND user_id=?").get(Number(ctx.match[1]), ctx.from.id);
   if (!o) return ctx.reply("Order မတွေ့ပါ။");
-  const labels = { pending: "⏳ Pending", confirmed: "✅ Confirmed", delivered: "🚚 Delivered", cancelled: "❌ Cancelled" };
+  const labels = { pending: "⏳ Pending", confirmed: "✅ Approved", delivered: "🚚 Delivered", cancelled: "❌ Cancelled", rejected: "🚫 Rejected" };
   const kb = new InlineKeyboard();
   if (o.status === "pending" || o.status === "confirmed") {
     kb.text("❌ Order ဖျက်သိမ်းရန်", `mycancel:${o.id}`).row();
@@ -533,7 +533,7 @@ bot.callbackQuery(/^mycancel:(\d+)$/, async ctx => {
   await ctx.answerCallbackQuery();
   const o = db.prepare("SELECT * FROM orders WHERE id=? AND user_id=?").get(Number(ctx.match[1]), ctx.from.id);
   if (!o) return ctx.reply("Order မတွေ့ပါ။");
-  if (o.status === "delivered" || o.status === "cancelled") {
+  if (o.status === "delivered" || o.status === "cancelled" || o.status === "rejected") {
     return ctx.reply("ဤ Order ကို ဖျက်သိမ်း၍ မရတော့ပါ။", { reply_markup: mainMenu() });
   }
   db.prepare("UPDATE orders SET status='cancelled' WHERE id=?").run(o.id);
@@ -1026,8 +1026,9 @@ bot.callbackQuery(/^ord:(\d+)$/, async ctx => {
     `🕐 ${o.created_at}\n` +
     (o.payment_screenshot ? `📸 Screenshot: ရရှိပြီး` : `📸 Screenshot: မရသေး`);
   const kb = new InlineKeyboard()
-    .text("✅ Confirm", `ost:${o.id}:confirmed`).text("🚚 Delivered", `ost:${o.id}:delivered`).row()
-    .text("❌ Cancel", `ost:${o.id}:cancelled`).text("⏳ Pending", `ost:${o.id}:pending`).row();
+    .text("✅ Approve", `ost:${o.id}:confirmed`).text("❌ Reject", `ost:${o.id}:rejected`).row()
+    .text("🚚 Delivered", `ost:${o.id}:delivered`).text("⏳ Pending", `ost:${o.id}:pending`).row()
+    .text("🛑 Cancel", `ost:${o.id}:cancelled`).row();
   if (o.payment_screenshot) kb.text("📸 Screenshot ကြည့်", `oshow:${o.id}`).row();
   kb.text("⬅️ Orders", "admin_orders");
   await ctx.reply(text, { reply_markup: kb });
@@ -1039,18 +1040,39 @@ bot.callbackQuery(/^ost:(\d+):(\w+)$/, async ctx => {
   if (!isAdmin(ctx)) return;
   const id = Number(ctx.match[1]);
   const status = ctx.match[2];
+  const allowed = new Set(["pending", "confirmed", "delivered", "cancelled", "rejected"]);
+  if (!allowed.has(status)) return ctx.reply("မမှန်ကန်သော status ဖြစ်ပါသည်။");
   const o = db.prepare("SELECT * FROM orders WHERE id=?").get(id);
   if (!o) return ctx.reply("Order မတွေ့ပါ။");
-  db.prepare("UPDATE orders SET status=? WHERE id=?").run(status, id);
-  saveDb();
-  const labels = { pending: "⏳ Pending", confirmed: "✅ Confirmed", delivered: "🚚 Delivered", cancelled: "❌ Cancelled" };
-  try {
-    await bot.api.sendMessage(o.user_id,
-      `📢 သင့် Order #${id} အခြေအနေ ပြောင်းလဲပါပြီ:\n\n${labels[status] || status}\n\n📱 ${o.product_name}\n💰 ${money(o.price)}`);
-  } catch (e) {}
-  await ctx.reply(`✅ Order #${id} → ${labels[status] || status}\n\nCustomer ကို အသိပေးပြီးပါပြီ။`, { reply_markup: adminMenu() });
-});
 
+  // Delivered/cancelled/rejected orders are terminal. Prevent accidental
+  // approve/reject changes after fulfillment or a previous rejection.
+  if (status === "rejected" && ["delivered", "cancelled", "rejected"].includes(o.status)) {
+    return ctx.reply("ဒီ Order ကို Reject ပြုလုပ်၍ မရတော့ပါ။", { reply_markup: adminMenu() });
+  }
+  if (status === "confirmed" && ["delivered", "cancelled", "rejected"].includes(o.status)) {
+    return ctx.reply("ဒီ Order ကို Approve ပြုလုပ်၍ မရတော့ပါ။", { reply_markup: adminMenu() });
+  }
+
+  const updateOrder = db.transaction(() => {
+    // Rejecting a pending/approved order releases the reserved stock exactly once.
+    if (status === "rejected" && o.status !== "rejected" && o.status !== "cancelled" && o.product_id) {
+      db.prepare("UPDATE products SET stock=stock+? WHERE id=?").run(o.quantity || 1, o.product_id);
+      db.prepare("INSERT INTO stock_log (product_id, product_name, change, note) VALUES (?,?,?,?)")
+        .run(o.product_id, o.product_name, o.quantity || 1, `order #${id} rejected by admin`);
+    }
+    db.prepare("UPDATE orders SET status=? WHERE id=?").run(status, id);
+  });
+  updateOrder();
+  saveDb();
+
+  const labels = { pending: "⏳ Pending", confirmed: "✅ Approved", delivered: "🚚 Delivered", cancelled: "❌ Cancelled", rejected: "🚫 Rejected" };
+  const customerMessage = status === "rejected"
+    ? `🚫 သင့် Order #${id} ကို Admin မှ Reject လုပ်လိုက်ပါသည်။\n\n📱 ${o.product_name}\n💰 ${money(o.price)}\n\nStock ပြန်လည်ဖြည့်ထားပြီးဖြစ်ပါသည်။ အသေးစိတ်အတွက် Admin ကို ဆက်သွယ်ပါ။`
+    : `📢 သင့် Order #${id} အခြေအနေ ပြောင်းလဲပါပြီ:\n\n${labels[status]}\n\n📱 ${o.product_name}\n💰 ${money(o.price)}`;
+  try { await bot.api.sendMessage(o.user_id, customerMessage); } catch (e) {}
+  await ctx.reply(`✅ Order #${id} → ${labels[status]}${status === "rejected" ? "\nStock ပြန်လည်ဖြည့်ပြီး Customer ကို အသိပေးပြီးပါပြီ။" : "\nCustomer ကို အသိပေးပြီးပါပြီ။"}`, { reply_markup: adminMenu() });
+});
 // ---- Admin: view payment screenshot ----
 bot.callbackQuery(/^oshow:(\d+)$/, async ctx => {
   await ctx.answerCallbackQuery();
