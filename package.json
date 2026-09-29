@@ -12,5 +12,8 @@
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "grammy": "^1.35.0"
+  },
+  "engines": {
+    "node": "20.x"
   }
 }
