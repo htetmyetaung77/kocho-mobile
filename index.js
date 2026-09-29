@@ -132,6 +132,7 @@ addColumnIfMissing("orders", "quantity", "INTEGER DEFAULT 1");
 addColumnIfMissing("orders", "delivery_fee", "INTEGER DEFAULT 0");
 addColumnIfMissing("orders", "payment_screenshot", "TEXT DEFAULT ''");
 addColumnIfMissing("orders", "note", "TEXT DEFAULT ''");
+addColumnIfMissing("orders", "approved_at", "TEXT DEFAULT ''");
 addColumnIfMissing("requests", "reply", "TEXT DEFAULT ''");
 addColumnIfMissing("requests", "replied_at", "TEXT DEFAULT ''");
 
@@ -470,6 +471,66 @@ function money(n) {
   if (!n || Number(n) === 0) return "စျေးနှုန်း မေးမြန်းပါ";
   return Number(n).toLocaleString("en-US") + " MMK";
 }
+// ---- Automated sales reports (Asia/Yangon) ----
+function sqlNow() { return new Date().toISOString().slice(0, 19).replace("T", " "); }
+function yangonParts(date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Yangon", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(date);
+  const out = {};
+  for (const p of parts) if (p.type !== "literal") out[p.type] = p.value;
+  return { year: Number(out.year), month: Number(out.month), day: Number(out.day), hour: Number(out.hour), minute: Number(out.minute) };
+}
+function yangonMidnightUtc(year, month, day) { return new Date(Date.UTC(year, month - 1, day) - (6 * 60 + 30) * 60 * 1000); }
+function yangonDateKey(p) { return `${p.year}-${String(p.month).padStart(2, "0")}-${String(p.day).padStart(2, "0")}`; }
+function formatReportDate(date) { return date.toLocaleString("en-GB", { timeZone: "Asia/Yangon", dateStyle: "medium", timeStyle: "short" }); }
+function buildSalesReport(kind) {
+  const now = new Date();
+  const current = yangonParts(now);
+  let start;
+  let periodKey;
+  let title;
+  if (kind === "daily") {
+    start = yangonMidnightUtc(current.year, current.month, current.day);
+    periodKey = yangonDateKey(current);
+    title = "နေ့စဉ် အရောင်းစာရင်း";
+  } else {
+    const day = new Date(Date.UTC(current.year, current.month - 1, current.day));
+    const mondayOffset = (day.getUTCDay() + 6) % 7;
+    const monday = new Date(day.getTime() - mondayOffset * 24 * 60 * 60 * 1000);
+    const y = monday.getUTCFullYear(), m = monday.getUTCMonth() + 1, d = monday.getUTCDate();
+    start = yangonMidnightUtc(y, m, d);
+    periodKey = `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+    title = "အပတ်စဉ် အရောင်းစာရင်း";
+  }
+  const startSql = start.toISOString().slice(0, 19).replace("T", " ");
+  const endSql = now.toISOString().slice(0, 19).replace("T", " ");
+  const where = `status IN ('confirmed','delivered') AND datetime(COALESCE(NULLIF(approved_at,''), created_at)) >= datetime(?) AND datetime(COALESCE(NULLIF(approved_at,''), created_at)) < datetime(?)`;
+  const summary = db.prepare(`SELECT COUNT(*) orders, COALESCE(SUM(quantity),0) units, COALESCE(SUM(price),0) revenue FROM orders WHERE ${where}`).get(startSql, endSql);
+  const rows = db.prepare(`SELECT product_name, COUNT(*) orders, COALESCE(SUM(quantity),0) units, COALESCE(SUM(price),0) revenue FROM orders WHERE ${where} GROUP BY product_name ORDER BY revenue DESC LIMIT 10`).all(startSql, endSql);
+  const lines = rows.length ? rows.map((r, i) => `${i + 1}. ${r.product_name} — ${r.units} ခု / ${money(r.revenue)}`).join("\n") : "အတည်ပြုထားသော အရောင်းမရှိသေးပါ။";
+  const text = `📊 ${title}\n📅 ကာလ: ${periodKey} မှ ယခုအချိန်အထိ\n🕐 ထုတ်ပြန်ချိန်: ${formatReportDate(now)}\n\n🧾 Approved Orders: ${summary.orders || 0}\n📦 ရောင်းရသော အရေအတွက်: ${summary.units || 0} ခု\n💰 စုစုပေါင်း အရောင်းတန်ဖိုး: ${money(summary.revenue || 0)}\n\n📱 Product အလိုက်\n${lines}`;
+  return { text, periodKey };
+}
+async function sendSalesReport(kind, force = false) {
+  const { text, periodKey } = buildSalesReport(kind);
+  const settingKey = `sales_report_${kind}_last`;
+  if (!force && getSetting(settingKey) === periodKey) return false;
+  if (!ADMIN_IDS.size) { console.warn(`Cannot send ${kind} sales report: ADMIN_ID is not configured.`); return false; }
+  let sent = 0;
+  for (const adminId of ADMIN_IDS) {
+    try { await bot.api.sendMessage(adminId, text); sent++; }
+    catch (e) { console.warn(`${kind} sales report failed for admin ${adminId}:`, e.message); }
+  }
+  if (sent) { setSetting(settingKey, periodKey); saveDb(); console.log(`${kind} sales report sent (${periodKey}) to ${sent} admin(s).`); }
+  return sent > 0;
+}
+function scheduleSalesReports() {
+  setInterval(async () => {
+    const p = yangonParts();
+    if (p.hour === 20 && p.minute === 0) await sendSalesReport("daily");
+    if (p.hour === 20 && p.minute === 5 && new Date(Date.UTC(p.year, p.month - 1, p.day)).getUTCDay() === 0) await sendSalesReport("weekly");
+  }, 60 * 1000);
+  console.log("Sales reports scheduled: daily 20:00 and weekly Sunday 20:05 (Asia/Yangon).");
+}
 
 function mainMenu() {
   return new InlineKeyboard()
@@ -484,6 +545,7 @@ function adminMenu() {
     .text("📊 Statistics", "stats").text("📱 Products", "admin_products").row()
     .text("➕ Add Product", "admin_add").text("📦 Stock In/Out", "admin_stock").row()
     .text("📈 Orders", "admin_orders").text("📥 Requests", "admin_requests").row()
+    .text("📊 Daily Report", "report_daily").text("📅 Weekly Report", "report_weekly").row()
     .text("👥 Users", "users").text("📢 Broadcast", "broadcast").row()
     .text("📣 Post to Channel", "post_channel").row()
     .text("⚙️ Settings", "settings").row()
@@ -721,6 +783,16 @@ bot.command("admin", async ctx => {
   if (!isAdmin(ctx)) return ctx.reply("⛔ Admin only.");
   await ctx.reply("🔐 Admin Panel", { reply_markup: adminMenu() });
 });
+bot.command("dailyreport", async ctx => {
+  if (!isAdmin(ctx)) return ctx.reply("⛔ Admin only.");
+  await sendSalesReport("daily", true);
+  await ctx.reply("📊 Daily sales report ပို့ပြီးပါပြီ။", { reply_markup: adminMenu() });
+});
+bot.command("weeklyreport", async ctx => {
+  if (!isAdmin(ctx)) return ctx.reply("⛔ Admin only.");
+  await sendSalesReport("weekly", true);
+  await ctx.reply("📅 Weekly sales report ပို့ပြီးပါပြီ။", { reply_markup: adminMenu() });
+});
 
 // ---- /post : post a promotional message with buttons to the channel ----
 bot.command("post", async ctx => {
@@ -919,6 +991,18 @@ bot.callbackQuery("admin_home", async ctx => {
   try { await ctx.editMessageText("🔐 Admin Panel", { reply_markup: adminMenu() }); }
   catch (e) { await ctx.reply("🔐 Admin Panel", { reply_markup: adminMenu() }); }
 });
+bot.callbackQuery("report_daily", async ctx => {
+  await ctx.answerCallbackQuery();
+  if (!isAdmin(ctx)) return;
+  await sendSalesReport("daily", true);
+  await ctx.reply("📊 Daily sales report ပို့ပြီးပါပြီ။", { reply_markup: adminMenu() });
+});
+bot.callbackQuery("report_weekly", async ctx => {
+  await ctx.answerCallbackQuery();
+  if (!isAdmin(ctx)) return;
+  await sendSalesReport("weekly", true);
+  await ctx.reply("📅 Weekly sales report ပို့ပြီးပါပြီ။", { reply_markup: adminMenu() });
+});
 
 // ---- Edit single product ----
 bot.callbackQuery(/^edit:(\d+)$/, async ctx => {
@@ -1090,7 +1174,8 @@ bot.callbackQuery(/^ost:(\d+):(\w+)$/, async ctx => {
       db.prepare("INSERT INTO stock_log (product_id, product_name, change, note) VALUES (?,?,?,?)")
         .run(o.product_id, o.product_name, o.quantity || 1, `order #${id} rejected by admin`);
     }
-    db.prepare("UPDATE orders SET status=? WHERE id=?").run(status, id);
+    const approvedAt = status === "confirmed" && o.status !== "confirmed" ? sqlNow() : (o.approved_at || "");
+    db.prepare("UPDATE orders SET status=?, approved_at=? WHERE id=?").run(status, approvedAt, id);
   });
   updateOrder();
   saveDb();
@@ -1663,6 +1748,7 @@ bot.start({
     await pullFromGitHub();
   } catch (e) { console.log("pull error:", e.message); }
   seedIfEmpty();
+  scheduleSalesReports();
   // Periodic backup every 5 minutes
   if (GITHUB_TOKEN && GITHUB_REPO) {
     setInterval(() => { pushToGitHub(); }, 5 * 60 * 1000);
