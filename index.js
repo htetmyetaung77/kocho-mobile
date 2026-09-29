@@ -17,6 +17,35 @@ const GITHUB_TOKEN = process.env.GITHUB_TOKEN || ""; // for DB persistence
 const GITHUB_REPO = process.env.GITHUB_REPO || "";   // e.g. htetmyetaung77/kocho-mobile
 const DELIVERY_FEE = Number(process.env.DELIVERY_FEE || 0); // optional delivery fee
 const REQUIRE_CHANNEL_JOIN = String(process.env.REQUIRE_CHANNEL_JOIN || "").toLowerCase() === "true";
+// ---- Runtime monitoring (visible from /monitor) ----
+const SERVICE_STARTED_AT = new Date();
+const RUNTIME_LOG_LIMIT = 500;
+const runtimeLogs = [];
+const healthProbeTimes = [];
+function monitorValue(value) {
+  if (value instanceof Error) return value.stack || value.message;
+  if (typeof value === "string") return value;
+  try { return JSON.stringify(value); } catch (e) { return String(value); }
+}
+function recordRuntimeLog(level, args) {
+  runtimeLogs.push({ at: new Date().toISOString(), level, message: args.map(monitorValue).join(" ") });
+  if (runtimeLogs.length > RUNTIME_LOG_LIMIT) runtimeLogs.splice(0, runtimeLogs.length - RUNTIME_LOG_LIMIT);
+}
+const nativeConsoleError = console.error.bind(console);
+const nativeConsoleWarn = console.warn.bind(console);
+console.error = (...args) => { recordRuntimeLog("error", args); nativeConsoleError(...args); };
+console.warn = (...args) => { recordRuntimeLog("warn", args); nativeConsoleWarn(...args); };
+process.on("unhandledRejection", reason => recordRuntimeLog("error", ["Unhandled promise rejection:", reason]));
+process.on("uncaughtException", error => {
+  recordRuntimeLog("error", ["Uncaught exception:", error]);
+  nativeConsoleError("Uncaught exception; exiting so Render can restart the service.", error);
+  setTimeout(() => process.exit(1), 100);
+});
+function pruneMonitorHistory() {
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+  while (healthProbeTimes.length && healthProbeTimes[0] < cutoff) healthProbeTimes.shift();
+  while (runtimeLogs.length && Date.parse(runtimeLogs[0].at) < cutoff) runtimeLogs.shift();
+}
 
 if (!TOKEN || TOKEN === "PASTE_NEW_BOT_TOKEN_HERE") {
   console.error("BOT_TOKEN is missing. Put your NEW token in .env / Render Variables.");
@@ -1438,9 +1467,14 @@ function adminAuth(req, res, next) {
 }
 
 app.get("/", (_, res) => res.send("Ko Cho Mobile Bot is running ✅"));
-app.get("/health", (_, res) => res.json({ ok: true }));
+app.get("/health", (_, res) => {
+  healthProbeTimes.push(Date.now());
+  pruneMonitorHistory();
+  res.json({ ok: true, service: "kocho-mobile-bot", uptimeSeconds: Math.floor(process.uptime()) });
+});
 app.get("/miniapp", (_, res) => res.sendFile(path.join(__dirname, "public", "index.html")));
 app.get("/admin", (_, res) => res.sendFile(path.join(__dirname, "public", "admin.html")));
+app.get("/monitor", (_, res) => res.sendFile(path.join(__dirname, "public", "monitor.html")));
 
 // ---- Public API (for Mini App shop) ----
 app.get("/api/products", (req, res) => {
@@ -1462,6 +1496,32 @@ app.post("/api/admin/login", (req, res) => {
   const { password } = req.body || {};
   if (password === ADMIN_PASSWORD) return res.json({ ok: true });
   res.status(401).json({ ok: false, error: "wrong password" });
+});
+app.get("/api/monitor/summary", adminAuth, (_, res) => {
+  pruneMonitorHistory();
+  const errors24h = runtimeLogs.filter(x => x.level === "error").length;
+  const serviceUrl = PUBLIC_URL || "https://kocho-mobile-bot.onrender.com";
+  res.json({
+    ok: true,
+    summary: {
+      status: "online",
+      startedAt: SERVICE_STARTED_AT.toISOString(),
+      processUptimeSeconds: Math.floor(process.uptime()),
+      lastHealthAt: healthProbeTimes.length ? new Date(healthProbeTimes[healthProbeTimes.length - 1]).toISOString() : null,
+      healthChecks24h: healthProbeTimes.length,
+      errors24h,
+      nodeVersion: process.version,
+      memoryRssMb: Math.round(process.memoryUsage().rss / 1024 / 1024),
+      serviceUrl,
+      miniAppUrl: serviceUrl.replace(/\/$/, "") + "/miniapp",
+      renderDashboardUrl: "https://dashboard.render.com/web/srv-daomavo473hc73cvgim0",
+    },
+    logs: runtimeLogs.slice(-100).reverse(),
+  });
+});
+app.get("/api/monitor/logs", adminAuth, (_, res) => {
+  pruneMonitorHistory();
+  res.json({ ok: true, logs: runtimeLogs.slice(-200).reverse() });
 });
 
 app.get("/api/admin/products", adminAuth, (_, res) => {

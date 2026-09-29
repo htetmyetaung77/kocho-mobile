@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="my">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>KO CHO MOBILE — Monitoring</title>
+<style>
+:root{--bg:#08111f;--card:#101d31;--card2:#14243b;--line:#243753;--text:#e8f0fb;--muted:#91a4bf;--brand:#55a7ff;--ok:#2bd576;--bad:#ff6577;--warn:#ffc857}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at top,#102542,#08111f 55%);color:var(--text);font:14px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;min-height:100vh}.wrap{width:min(1100px,100%);margin:auto;padding:22px 16px 60px}header{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:18px}h1{margin:0;font-size:24px}h2{font-size:15px;margin:0 0 12px;color:var(--brand)}p{margin:4px 0}.muted{color:var(--muted);font-size:12px}.card{background:rgba(16,29,49,.9);border:1px solid var(--line);border-radius:16px;padding:16px;margin:12px 0;box-shadow:0 12px 30px #0003}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.metric{background:var(--card2);border:1px solid var(--line);border-radius:12px;padding:13px}.metric b{font-size:22px;display:block;margin-top:4px}.metric span{font-size:11px;color:var(--muted)}.ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}.pill{display:inline-flex;align-items:center;gap:6px;border-radius:99px;padding:5px 10px;font-weight:700;font-size:12px;background:#163e2b;color:var(--ok)}.pill.bad{background:#4a1d2a;color:var(--bad)}.dot{width:8px;height:8px;border-radius:50%;background:currentColor}.actions{display:flex;gap:8px;flex-wrap:wrap}.btn{border:1px solid var(--line);border-radius:9px;background:#1b2c46;color:var(--text);padding:9px 13px;cursor:pointer;font-weight:700}.btn:hover{border-color:var(--brand)}.links{display:flex;gap:14px;flex-wrap:wrap}.links a{color:var(--brand);text-decoration:none}.log{border-top:1px solid var(--line);padding:10px 0}.log:first-child{border-top:0}.logtop{display:flex;justify-content:space-between;gap:10px}.tag{font-size:10px;text-transform:uppercase;border-radius:5px;padding:2px 6px;background:#253752;color:var(--muted)}.tag.error{background:#4a1d2a;color:var(--bad)}.tag.warn{background:#4a3b1d;color:var(--warn)}pre{white-space:pre-wrap;word-break:break-word;margin:5px 0 0;color:#b9c8dc;font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace}.empty{text-align:center;padding:22px;color:var(--muted)}#login{max-width:400px;margin:12vh auto}.field{width:100%;border:1px solid var(--line);background:#0b1627;color:var(--text);border-radius:9px;padding:11px;margin:7px 0 12px}.hide{display:none!important}@media(max-width:760px){.grid{grid-template-columns:repeat(2,1fr)}header{display:block}.actions{margin-top:12px}}
+</style>
+</head>
+<body>
+<div id="login" class="card">
+  <h2>🔐 Monitoring Login</h2><p class="muted">Admin password ဖြင့် monitoring dashboard ဝင်ပါ။</p>
+  <input id="pw" class="field" type="password" placeholder="Admin password" autocomplete="current-password">
+  <button class="btn" style="width:100%" onclick="login()">ဝင်ရောက်မည်</button>
+  <p id="loginError" class="bad muted"></p>
+</div>
+<main id="app" class="wrap hide">
+  <header><div><h1>📡 KO CHO MOBILE Monitoring</h1><p class="muted">Render service uptime, health probes နဲ့ application error logs</p></div><div class="actions"><button class="btn" onclick="load()">🔄 Refresh</button><button class="btn" onclick="logout()">🚪 Logout</button></div></header>
+  <section class="card"><div class="grid" id="metrics"></div></section>
+  <section class="card"><h2>🔗 Service Links</h2><div class="links" id="links"></div></section>
+  <section class="card"><h2>⚠️ Recent Error Logs</h2><p class="muted">လက်ရှိ Render instance မှ application-level error/warning များ။ Deploy/restart ဖြစ်ပါက memory log ပြန်စပါမည်။</p><div id="logs"><div class="empty">Loading...</div></div></section>
+</main>
+<script>
+let PW=localStorage.getItem('kocho_monitor_pw')||'';
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt=n=>{n=Math.max(0,Number(n)||0);const d=Math.floor(n/86400),h=Math.floor(n%86400/3600),m=Math.floor(n%3600/60),s=Math.floor(n%60);return `${d}d ${h}h ${m}m ${s}s`};
+const date=s=>s?new Date(s).toLocaleString():'—';
+async function api(path){const r=await fetch(path,{headers:{'x-admin-password':PW}});if(r.status===401)throw Error('unauthorized');return r.json()}
+async function login(){const p=document.getElementById('pw').value.trim();if(!p)return;try{const r=await fetch('/api/admin/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({password:p})});const j=await r.json();if(!j.ok)throw Error('wrong');PW=p;localStorage.setItem('kocho_monitor_pw',p);show()}catch(e){document.getElementById('loginError').textContent='Password မှားနေသည် သို့မဟုတ် server မရပါ။'}}
+function logout(){PW='';localStorage.removeItem('kocho_monitor_pw');document.getElementById('app').classList.add('hide');document.getElementById('login').classList.remove('hide')}
+function show(){document.getElementById('login').classList.add('hide');document.getElementById('app').classList.remove('hide');load()}
+function metric(value,label,cls=''){return `<div class="metric"><span>${label}</span><b class="${cls}">${value}</b></div>`}
+async function load(){try{const j=await api('/api/monitor/summary');const s=j.summary;const online=s.status==='online';document.getElementById('metrics').innerHTML=[metric(`<span class="pill ${online?'':'bad'}"><i class="dot"></i>${online?'ONLINE':'OFFLINE'}</span>`,'Service status'),metric(fmt(s.processUptimeSeconds),'Current process uptime',online?'ok':'bad'),metric(s.errors24h,'Errors — last 24h',s.errors24h?'bad':'ok'),metric(s.healthChecks24h,'Health checks — last 24h',s.healthChecks24h?'ok':'warn'),metric(date(s.startedAt),'Started at'),metric(date(s.lastHealthAt),'Last health check'),metric(s.nodeVersion,'Node runtime'),metric(s.memoryRssMb+' MB','Memory RSS')].join('');document.getElementById('links').innerHTML=`<a href="${esc(s.serviceUrl)}" target="_blank">🌐 Public service</a><a href="${esc(s.miniAppUrl)}" target="_blank">🛍️ Mini App</a><a href="${esc(s.renderDashboardUrl)}" target="_blank">⚙️ Render dashboard</a>`;renderLogs(j.logs||[])}catch(e){if(e.message==='unauthorized')logout();else document.getElementById('logs').innerHTML='<div class="empty bad">Monitoring API မရပါ။</div>'}}
+function renderLogs(rows){const el=document.getElementById('logs');if(!rows.length){el.innerHTML='<div class="empty">Error log မရှိသေးပါ ✅</div>';return}el.innerHTML=rows.map(x=>`<div class="log"><div class="logtop"><span class="tag ${x.level==='error'?'error':x.level==='warn'?'warn':''}">${esc(x.level)}</span><span class="muted">${date(x.at)}</span></div><pre>${esc(x.message)}${x.stack?'\n'+esc(x.stack):''}</pre></div>`).join('')}
+if(PW)show();
+setInterval(()=>{if(PW&&!document.getElementById('app').classList.contains('hide'))load()},30000);
+</script>
+</body></html>
