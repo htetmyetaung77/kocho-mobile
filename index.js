@@ -5,7 +5,8 @@ const { Bot, InlineKeyboard, InputFile } = require("grammy");
 const Database = require("better-sqlite3");
 
 const TOKEN = process.env.BOT_TOKEN;
-const ADMIN_ID = String(process.env.ADMIN_ID || "").trim();
+const ADMIN_IDS = new Set(String(process.env.ADMIN_ID || "").split(",").map(v => v.trim()).filter(Boolean));
+const ADMIN_ID = [...ADMIN_IDS][0] || "";
 const PORT = Number(process.env.PORT || 3000);
 const PUBLIC_URL = process.env.PUBLIC_URL || "";
 const BOT_USERNAME = process.env.BOT_USERNAME || "";
@@ -386,7 +387,7 @@ function saveUser(ctx) {
   `).run(u.id, u.username || "", u.first_name || "");
 }
 
-function isAdmin(ctx) { return ADMIN_ID && String(ctx.from.id) === ADMIN_ID; }
+function isAdmin(ctx) { return ADMIN_IDS.size > 0 && ADMIN_IDS.has(String(ctx.from.id)); }
 
 // ---- Channel membership check (for join requirement) ----
 async function isChannelMember(userId) {
