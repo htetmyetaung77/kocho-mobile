@@ -528,7 +528,7 @@ async function showOrders(ctx) {
   if (!rows.length) return ctx.reply("📦 Order မရှိသေးပါ။", { reply_markup: mainMenu() });
   const kb = new InlineKeyboard();
   for (const o of rows) {
-    const icon = o.status === "delivered" ? "🚚" : o.status === "confirmed" ? "✅" : o.status === "cancelled" ? "❌" : "⏳";
+    const icon = o.status === "delivered" ? "🚚" : o.status === "confirmed" ? "✅" : o.status === "rejected" ? "🚫" : o.status === "cancelled" ? "❌" : "⏳";
     kb.text(`${icon} #${o.id} ${o.product_name.slice(0, 18)} — ${money(o.price)}`, `myord:${o.id}`).row();
   }
   kb.text("🏠 Main Menu", "home");
@@ -1096,11 +1096,20 @@ bot.callbackQuery(/^ost:(\d+):(\w+)$/, async ctx => {
   saveDb();
 
   const labels = { pending: "⏳ Pending", confirmed: "✅ Approved", delivered: "🚚 Delivered", cancelled: "❌ Cancelled", rejected: "🚫 Rejected" };
-  const customerMessage = status === "rejected"
-    ? `🚫 သင့် Order #${id} ကို Admin မှ Reject လုပ်လိုက်ပါသည်။\n\n📱 ${o.product_name}\n💰 ${money(o.price)}\n\nStock ပြန်လည်ဖြည့်ထားပြီးဖြစ်ပါသည်။ အသေးစိတ်အတွက် Admin ကို ဆက်သွယ်ပါ။`
-    : `📢 သင့် Order #${id} အခြေအနေ ပြောင်းလဲပါပြီ:\n\n${labels[status]}\n\n📱 ${o.product_name}\n💰 ${money(o.price)}`;
-  try { await bot.api.sendMessage(o.user_id, customerMessage); } catch (e) {}
-  await ctx.reply(`✅ Order #${id} → ${labels[status]}${status === "rejected" ? "\nStock ပြန်လည်ဖြည့်ပြီး Customer ကို အသိပေးပြီးပါပြီ။" : "\nCustomer ကို အသိပေးပြီးပါပြီ။"}`, { reply_markup: adminMenu() });
+  const customerMessage = status === "confirmed"
+    ? `✅ သင့် Order #${id} ကို Admin မှ Approve လုပ်ပြီးပါပြီ။\n\n📱 ${o.product_name}\n🔢 အရေအတွက်: ${o.quantity || 1}\n💰 ${money(o.price)}\n\nဆိုင်ဘက်မှ ဆက်လက်ဆောင်ရွက်ပေးပါမည်။`
+    : status === "rejected"
+      ? `🚫 သင့် Order #${id} ကို Admin မှ Reject လုပ်လိုက်ပါသည်။\n\n📱 ${o.product_name}\n💰 ${money(o.price)}\n\nStock ပြန်လည်ဖြည့်ထားပြီးဖြစ်ပါသည်။ အသေးစိတ်အတွက် Admin ကို ဆက်သွယ်ပါ။`
+      : `📢 သင့် Order #${id} အခြေအနေ ပြောင်းလဲပါပြီ:\n\n${labels[status]}\n\n📱 ${o.product_name}\n💰 ${money(o.price)}`;
+  let notified = true;
+  try { await bot.api.sendMessage(o.user_id, customerMessage); } catch (e) {
+    notified = false;
+    console.warn(`Order #${id} notification failed for user ${o.user_id}:`, e.message);
+  }
+  const deliveryNote = notified
+    ? (status === "rejected" ? "\nStock ပြန်လည်ဖြည့်ပြီး Customer ကို အသိပေးပြီးပါပြီ။" : "\nCustomer ကို အသိပေးပြီးပါပြီ။")
+    : "\n⚠️ Customer ဆီ notification မပို့နိုင်ပါ။ User က Bot ကို Start လုပ်ထားခြင်း ရှိ/မရှိ စစ်ပါ။";
+  await ctx.reply(`✅ Order #${id} → ${labels[status]}${deliveryNote}`, { reply_markup: adminMenu() });
 });
 // ---- Admin: view payment screenshot ----
 bot.callbackQuery(/^oshow:(\d+)$/, async ctx => {
