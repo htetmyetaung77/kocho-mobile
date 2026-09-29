@@ -1,0 +1,26 @@
+name: Render health ping
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  health-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Ping Render health endpoint
+        env:
+          HEALTH_URL: https://kocho-mobile-bot.onrender.com/health
+        run: |
+          set -euo pipefail
+          echo "Checking ${HEALTH_URL}"
+          response=$(curl --silent --show-error --fail --location --max-time 30 \
+            --write-out '\nHTTP_STATUS=%{http_code}\n' "${HEALTH_URL}")
+          echo "${response}"
+          grep -q '"ok":true' <<< "${response}"
+          echo "Render health check passed at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
